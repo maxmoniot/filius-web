@@ -28,14 +28,10 @@ function DeviceNode({
     const iconStyle = {
         background: isSelected ? `${deviceType.color}20` : 
             isWireTarget ? 'rgba(63, 185, 80, 0.1)' : 'transparent',
-        borderColor: isSelected ? deviceType.color :
-            isConnecting ? 'var(--accent-green)' :
-                (isConnectTarget || isWireTarget) ? 'var(--accent-green)' : 
-                    isModemActive ? '#3fb950' : 'var(--border)',
+        border: 'none',
         boxShadow: isSelected ? `0 0 20px ${deviceType.color}40` :
             isConnecting ? '0 0 20px rgba(63, 185, 80, 0.5)' :
-                (isConnectTarget || isWireTarget) ? '0 0 15px rgba(63, 185, 80, 0.3)' : 
-                    isModemActive ? '0 0 15px rgba(63, 185, 80, 0.4)' : 'none',
+                (isConnectTarget || isWireTarget) ? '0 0 15px rgba(63, 185, 80, 0.3)' : 'none',
         transform: isWireTarget ? 'scale(1.05)' : 'scale(1)',
         transition: 'all 0.2s ease'
     };
