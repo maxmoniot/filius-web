@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Filius Web - Simulateur de Réseau Éducatif</title>
+    
+    <!-- Dépendances externes -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.development.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.development.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+    
+    <!-- Polices -->
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    
+    <!-- Styles -->
+    <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+    <div id="root"></div>
+    
+    <!-- Scripts de l'application (ordre important) -->
+    <script type="text/babel" src="js/constants.js"></script>
+    <script type="text/babel" src="js/utils.js"></script>
+    <script type="text/babel" src="js/context.js"></script>
+    
+    <!-- Composants UI -->
+    <script type="text/babel" src="js/components/Header.js"></script>
+    <script type="text/babel" src="js/components/ComponentPanel.js"></script>
+    <script type="text/babel" src="js/components/DeviceNode.js"></script>
+    <script type="text/babel" src="js/components/Canvas.js"></script>
+    <script type="text/babel" src="js/components/PropertiesPanel.js"></script>
+    <script type="text/babel" src="js/components/LogConsole.js"></script>
+    <script type="text/babel" src="js/components/ContextMenu.js"></script>
+    <script type="text/babel" src="js/components/AppWindow.js"></script>
+    
+    <!-- Applications -->
+    <script type="text/babel" src="js/apps/CommandLine.js"></script>
+    <script type="text/babel" src="js/apps/Terminal.js"></script>
+    <script type="text/babel" src="js/apps/Browser.js"></script>
+    <script type="text/babel" src="js/apps/Explorer.js"></script>
+    <script type="text/babel" src="js/apps/TextEditor.js"></script>
+    <script type="text/babel" src="js/apps/WebServer.js"></script>
+    <script type="text/babel" src="js/apps/DNSServer.js"></script>
+    <script type="text/babel" src="js/apps/DHCPServer.js"></script>
+    
+    <!-- Modales -->
+    <script type="text/babel" src="js/modals/HelpModal.js"></script>
+    
+    <!-- Application principale -->
+    <script type="text/babel" src="js/App.js"></script>
+</body>
+</html>
