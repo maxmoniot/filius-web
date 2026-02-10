@@ -327,23 +327,40 @@ function FiliusWeb() {
         const device = devices.find(d => d.id === id);
         if (!device) return;
 
+        const newId = generateId();
         const newDevice = {
             ...deepClone(device),
-            id: generateId(),
+            id: newId,
             name: `${device.name} (copie)`,
             x: device.x + 50,
             y: device.y + 50,
             mac: generateMAC(),
             ip: device.ip ? incrementIP(device.ip) : null
         };
+        
+        // Si c'est un modem, générer une nouvelle IP publique unique
+        if (device.type === 'MODEM' && device.publicIP) {
+            newDevice.publicIP = generatePublicIP([...devices, newDevice]);
+        }
+        
         setDevices(prev => [...prev, newDevice]);
+        
+        // Sélectionner le nouvel appareil
+        setSelectedDevice(newId);
+        setSelectedDevices([newId]);
+        setSelectedAnnotations({ texts: [], rects: [] });
+        
         addLog(`Duplication: ${newDevice.name}`, 'success');
     }, [devices, addLog]);
     
     // Dupliquer tous les éléments sélectionnés
     const duplicateSelection = React.useCallback(() => {
         const newDevices = [];
+        const newDeviceIds = [];
         const deviceIdMap = {}; // Pour mapper ancien ID -> nouveau ID pour les connexions
+        
+        // Liste de tous les appareils pour vérifier les IPs uniques
+        let allDevicesForIPCheck = [...devices];
         
         // Dupliquer les appareils sélectionnés
         selectedDevices.forEach((id, index) => {
@@ -352,6 +369,7 @@ function FiliusWeb() {
             
             const newId = generateId();
             deviceIdMap[id] = newId;
+            newDeviceIds.push(newId);
             
             const newDevice = {
                 ...deepClone(device),
@@ -362,8 +380,20 @@ function FiliusWeb() {
                 mac: generateMAC(),
                 ip: device.ip ? incrementIP(device.ip) : null
             };
+            
+            // Si c'est un modem, générer une nouvelle IP publique unique
+            if (device.type === 'MODEM' && device.publicIP) {
+                newDevice.publicIP = generatePublicIP(allDevicesForIPCheck);
+                // Ajouter le nouveau modem à la liste pour éviter les doublons
+                allDevicesForIPCheck = [...allDevicesForIPCheck, newDevice];
+            }
+            
             newDevices.push(newDevice);
         });
+        
+        // Collecter les IDs des nouvelles annotations
+        const newTextIds = [];
+        const newRectIds = [];
         
         if (newDevices.length > 0) {
             setDevices(prev => [...prev, ...newDevices]);
@@ -392,9 +422,11 @@ function FiliusWeb() {
             const newTexts = selectedAnnotations.texts.map(textId => {
                 const text = annotations.texts.find(t => t.id === textId);
                 if (!text) return null;
+                const newTextId = 'text-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9);
+                newTextIds.push(newTextId);
                 return {
                     ...text,
-                    id: 'text-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9),
+                    id: newTextId,
                     x: text.x + 50,
                     y: text.y + 50
                 };
@@ -413,9 +445,11 @@ function FiliusWeb() {
             const newRects = selectedAnnotations.rects.map(rectId => {
                 const rect = annotations.rects.find(r => r.id === rectId);
                 if (!rect) return null;
+                const newRectId = 'rect-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9);
+                newRectIds.push(newRectId);
                 return {
                     ...rect,
-                    id: 'rect-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9),
+                    id: newRectId,
                     x: rect.x + 50,
                     y: rect.y + 50
                 };
@@ -428,6 +462,18 @@ function FiliusWeb() {
                 }));
             }
         }
+        
+        // Sélectionner les nouveaux éléments dupliqués
+        if (newDeviceIds.length > 0) {
+            setSelectedDevice(newDeviceIds[0]);
+            setSelectedDevices(newDeviceIds);
+        } else {
+            setSelectedDevice(null);
+            setSelectedDevices([]);
+        }
+        setSelectedAnnotations({ texts: newTextIds, rects: newRectIds });
+        setSelectedAnnotation(null);
+        
     }, [selectedDevices, selectedAnnotations, devices, connections, annotations, addLog]);
 
     // ========== GESTION DES CONNEXIONS ==========
@@ -1367,7 +1413,10 @@ function FiliusWeb() {
 
         try {
             const content = await readFile(file);
-            const project = JSON.parse(content);
+            const rawProject = JSON.parse(content);
+            
+            // Migrer le projet vers le format actuel
+            const project = migrateProject(rawProject);
 
             setDevices(project.devices || []);
             setConnections(project.connections || []);
@@ -1380,13 +1429,23 @@ function FiliusWeb() {
             setSelectedAnnotation(null);
             setOpenWindows([]);
             setPackets([]);
+            // Réinitialiser le zoom et l'offset pour centrer sur les appareils
+            if (project.devices && project.devices.length > 0) {
+                // Calculer le centre des appareils
+                const avgX = project.devices.reduce((sum, d) => sum + (d.x || 0), 0) / project.devices.length;
+                const avgY = project.devices.reduce((sum, d) => sum + (d.y || 0), 0) / project.devices.length;
+                // Centrer la vue sur les appareils
+                setCanvasOffset({ x: -avgX + 500, y: -avgY + 300 });
+            }
+            setCanvasScale(1);
             // Réinitialiser l'historique
             setHistory([]);
             setHistoryIndex(-1);
 
             addLog(`Projet chargé: ${project.name}`, 'success');
         } catch (err) {
-            addLog('Erreur de chargement du fichier', 'error');
+            console.error('Erreur de chargement:', err);
+            addLog(`Erreur de chargement: ${err.message || 'Format de fichier invalide'}`, 'error');
         }
 
         e.target.value = '';

@@ -50,7 +50,7 @@
 }
 
 body {
-    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
     background: var(--bg-dark);
     color: var(--text);
     overflow: hidden;
@@ -508,7 +508,7 @@ button:disabled {
 .device-node-ip {
     font-size: 10px;
     color: var(--accent-cyan);
-    font-family: 'JetBrains Mono', monospace;
+    font-family: 'Consolas', 'Monaco', 'Lucida Console', 'Liberation Mono', 'DejaVu Sans Mono', 'Courier New', monospace;
 }
 
 .device-node-connect-btn {
@@ -645,7 +645,7 @@ button:disabled {
 }
 
 .properties-field-input.mono {
-    font-family: 'JetBrains Mono', monospace;
+    font-family: 'Consolas', 'Monaco', 'Lucida Console', 'Liberation Mono', 'DejaVu Sans Mono', 'Courier New', monospace;
 }
 
 .properties-delete-btn {
@@ -711,7 +711,7 @@ button:disabled {
     flex: 1;
     overflow-y: auto;
     padding: 8px 12px;
-    font-family: 'JetBrains Mono', monospace;
+    font-family: 'Consolas', 'Monaco', 'Lucida Console', 'Liberation Mono', 'DejaVu Sans Mono', 'Courier New', monospace;
     font-size: 12px;
 }
 
@@ -805,7 +805,7 @@ button:disabled {
     flex: 1;
     background: #0d1117;
     padding: 12px;
-    font-family: 'JetBrains Mono', monospace;
+    font-family: 'Consolas', 'Monaco', 'Lucida Console', 'Liberation Mono', 'DejaVu Sans Mono', 'Courier New', monospace;
     font-size: 13px;
     overflow-y: auto;
     cursor: text;
@@ -908,7 +908,7 @@ button:disabled {
     background: transparent;
     border: none;
     color: var(--text);
-    font-family: 'JetBrains Mono', monospace;
+    font-family: 'Consolas', 'Monaco', 'Lucida Console', 'Liberation Mono', 'DejaVu Sans Mono', 'Courier New', monospace;
     font-size: 13px;
     outline: none;
 }
@@ -986,7 +986,7 @@ button:disabled {
     background: var(--bg-input);
     border: 1px solid var(--border);
     border-radius: 6px;
-    font-family: 'JetBrains Mono', monospace;
+    font-family: 'Consolas', 'Monaco', 'Lucida Console', 'Liberation Mono', 'DejaVu Sans Mono', 'Courier New', monospace;
     font-size: 13px;
 }
 
@@ -1077,7 +1077,7 @@ button:disabled {
 .texteditor-filename {
     font-size: 12px;
     color: var(--text-dim);
-    font-family: 'JetBrains Mono', monospace;
+    font-family: 'Consolas', 'Monaco', 'Lucida Console', 'Liberation Mono', 'DejaVu Sans Mono', 'Courier New', monospace;
 }
 
 .texteditor-content {
@@ -1086,7 +1086,7 @@ button:disabled {
     background: #0d1117;
     border: none;
     color: var(--text);
-    font-family: 'JetBrains Mono', monospace;
+    font-family: 'Consolas', 'Monaco', 'Lucida Console', 'Liberation Mono', 'DejaVu Sans Mono', 'Courier New', monospace;
     font-size: 13px;
     line-height: 1.6;
     resize: none;
@@ -1295,7 +1295,7 @@ button:disabled {
 .mb-4 { margin-bottom: 16px; }
 .text-sm { font-size: 12px; }
 .text-dim { color: var(--text-dim); }
-.font-mono { font-family: 'JetBrains Mono', monospace; }
+.font-mono { font-family: 'Consolas', 'Monaco', 'Lucida Console', 'Liberation Mono', 'DejaVu Sans Mono', 'Courier New', monospace; }
 
 /* ============================================
    LIGNE DE COMMANDE - STYLES
@@ -1307,7 +1307,7 @@ button:disabled {
     height: 100%;
     min-height: 0; /* Important pour flex + overflow */
     background: #0c1021;
-    font-family: 'JetBrains Mono', 'Consolas', 'Monaco', monospace;
+    font-family: 'Consolas', 'Monaco', 'Lucida Console', 'Liberation Mono', 'DejaVu Sans Mono', 'Courier New', monospace;
     font-size: 12px;
     color: #c5c8c6;
 }
@@ -1537,7 +1537,7 @@ button:disabled {
 }
 
 .server-input.mono {
-    font-family: 'JetBrains Mono', monospace;
+    font-family: 'Consolas', 'Monaco', 'Lucida Console', 'Liberation Mono', 'DejaVu Sans Mono', 'Courier New', monospace;
 }
 
 /* Boîtes d'info */
@@ -1581,7 +1581,7 @@ button:disabled {
     background: rgba(0,0,0,0.3);
     padding: 2px 6px;
     border-radius: 4px;
-    font-family: 'JetBrains Mono', monospace;
+    font-family: 'Consolas', 'Monaco', 'Lucida Console', 'Liberation Mono', 'DejaVu Sans Mono', 'Courier New', monospace;
     font-size: 12px;
 }
 
@@ -1627,7 +1627,7 @@ button:disabled {
     flex: 1;
     overflow-y: auto;
     padding: 8px;
-    font-family: 'JetBrains Mono', monospace;
+    font-family: 'Consolas', 'Monaco', 'Lucida Console', 'Liberation Mono', 'DejaVu Sans Mono', 'Courier New', monospace;
     font-size: 11px;
 }
 

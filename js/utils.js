@@ -8,6 +8,99 @@ function generateId() {
     return Math.random().toString(36).substr(2, 9);
 }
 
+// Migre un appareil d'une ancienne version vers le format actuel
+function migrateDevice(device, existingDevices = []) {
+    const migrated = { ...device };
+    
+    // S'assurer que l'appareil a un ID
+    if (!migrated.id) {
+        migrated.id = generateId();
+    }
+    
+    // S'assurer que l'appareil a une MAC
+    if (!migrated.mac) {
+        migrated.mac = generateMAC();
+    }
+    
+    // Normaliser le type (ancienne version pouvait avoir des types différents)
+    if (migrated.type) {
+        migrated.type = migrated.type.toUpperCase();
+    }
+    
+    // Gérer les anciens noms de propriétés
+    if (migrated.passerelle !== undefined && migrated.gateway === undefined) {
+        migrated.gateway = migrated.passerelle;
+        delete migrated.passerelle;
+    }
+    if (migrated.masque !== undefined && migrated.mask === undefined) {
+        migrated.mask = migrated.masque;
+        delete migrated.masque;
+    }
+    
+    // Valeurs par défaut pour les propriétés manquantes
+    if (migrated.gateway === undefined) migrated.gateway = '';
+    if (migrated.dns === undefined) migrated.dns = '';
+    if (migrated.mask === undefined) migrated.mask = '255.255.255.0';
+    if (migrated.dhcpEnabled === undefined) migrated.dhcpEnabled = false;
+    if (migrated.interfaces === undefined) migrated.interfaces = [];
+    if (migrated.arpTable === undefined) migrated.arpTable = {};
+    if (migrated.routingTable === undefined) migrated.routingTable = [];
+    
+    // Services et filesystem par défaut
+    if (!migrated.services) {
+        migrated.services = createDefaultServices();
+    }
+    if (!migrated.filesystem) {
+        migrated.filesystem = createDefaultFilesystem();
+    }
+    
+    // Pour les modems, s'assurer qu'ils ont une IP publique
+    if (migrated.type === 'MODEM') {
+        if (!migrated.publicIP) {
+            migrated.publicIP = generatePublicIP(existingDevices);
+        }
+        if (!migrated.natConfig) {
+            migrated.natConfig = {
+                tcp: { enabled: false, targetIP: '192.168.0.' },
+                udp: { enabled: false, targetIP: '192.168.0.' },
+                icmp: { enabled: false, targetIP: '192.168.0.' }
+            };
+        }
+        if (migrated.modemActive === undefined) {
+            migrated.modemActive = false;
+        }
+    }
+    
+    return migrated;
+}
+
+// Migre un projet complet d'une ancienne version
+function migrateProject(project) {
+    const migrated = {
+        version: '2.0',
+        name: project.name || project.projectName || 'Projet importé',
+        savedAt: project.savedAt || new Date().toISOString(),
+        devices: [],
+        connections: project.connections || [],
+        annotations: project.annotations || { texts: [], rects: [] }
+    };
+    
+    // Migrer chaque appareil
+    const devices = project.devices || [];
+    devices.forEach(device => {
+        const migratedDevice = migrateDevice(device, migrated.devices);
+        migrated.devices.push(migratedDevice);
+    });
+    
+    // S'assurer que les connexions ont des IDs
+    migrated.connections = migrated.connections.map(conn => ({
+        ...conn,
+        id: conn.id || generateId()
+    }));
+    
+    return migrated;
+}
+
 // Génère une adresse MAC aléatoire
 function generateMAC() {
     const hex = '0123456789ABCDEF';
