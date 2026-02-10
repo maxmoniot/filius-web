@@ -347,12 +347,18 @@ button:disabled {
     background: var(--bg-card);
     border: 1px solid var(--border);
     border-radius: 8px;
-    cursor: pointer;
+    cursor: grab;
     text-align: left;
     color: var(--text);
     width: 100%;
     margin-bottom: 6px;
-    transition: all 0.15s;
+    /* Pas de transition pour un drag plus réactif */
+    touch-action: none;
+    -webkit-user-drag: element;
+}
+
+.component-btn:active {
+    cursor: grabbing;
 }
 
 .component-btn:hover:not(:disabled) {
@@ -407,13 +413,20 @@ button:disabled {
     overflow: hidden;
 }
 
+.canvas-inner {
+    will-change: transform;
+    contain: layout style;
+}
+
 .canvas-svg {
     position: absolute;
     top: 0;
     left: 0;
     width: 100%;
     height: 100%;
-    pointer-events: none;
+    /* auto permet aux éléments du SVG (lignes, rectangles) de recevoir les clics */
+    /* Les zones vides du SVG laissent passer les clics au canvas parent */
+    pointer-events: auto;
 }
 
 .canvas-empty {
@@ -469,7 +482,7 @@ button:disabled {
     align-items: center;
     justify-content: center;
     font-size: 26px;
-    transition: all 0.15s;
+    /* Pas de transition pour de meilleures performances */
 }
 
 .device-node.selected .device-node-icon {
@@ -512,7 +525,7 @@ button:disabled {
     align-items: center;
     justify-content: center;
     font-size: 10px;
-    transition: all 0.15s;
+    /* Pas de transition pour de meilleures performances */
 }
 
 .device-node-connect-btn.connecting {

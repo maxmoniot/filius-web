@@ -4,13 +4,7 @@
    (Mode unifié : tout est toujours disponible)
    ============================================ */
 
-function ComponentPanel({ addDevice, wireMode, setWireMode, textMode, setTextMode, rectMode, setRectMode }) {
-
-    // Début du drag
-    function handleDragStart(e, type) {
-        e.dataTransfer.setData('deviceType', type);
-        e.dataTransfer.effectAllowed = 'copy';
-    }
+function ComponentPanel({ addDevice, startComponentDrag, wireMode, setWireMode, textMode, setTextMode, rectMode, setRectMode }) {
 
     return (
         <aside className="component-panel">
@@ -33,7 +27,7 @@ function ComponentPanel({ addDevice, wireMode, setWireMode, textMode, setTextMod
                         cursor: 'pointer',
                         fontSize: '14px',
                         fontWeight: wireMode ? '600' : '500',
-                        transition: 'all 0.2s'
+                        transition: 'none'
                     }}
                 >
                     <span style={{ fontSize: '18px' }}>🔌</span>
@@ -53,10 +47,13 @@ function ComponentPanel({ addDevice, wireMode, setWireMode, textMode, setTextMod
                                     key={type}
                                     className="component-btn"
                                     onClick={() => addDevice(type)}
-                                    title={tooltip}
-                                    draggable={true}
-                                    onDragStart={(e) => handleDragStart(e, type)}
-                                    style={{ cursor: 'grab' }}
+                                    onMouseDown={(e) => {
+                                        // Clic gauche uniquement - préparer le drag potentiel
+                                        if (e.button === 0 && startComponentDrag) {
+                                            startComponentDrag(type, e);
+                                        }
+                                    }}
+                                    title={tooltip + " (cliquez ou glissez)"}
                                 >
                                     <span className="component-btn-icon">
                                         {deviceType.image ? (
@@ -115,7 +112,7 @@ function ComponentPanel({ addDevice, wireMode, setWireMode, textMode, setTextMod
             {/* Aide contextuelle */}
             <div className="component-panel-help design">
                 💡 <strong>Aide</strong><br />
-                • Glissez-déposez pour ajouter<br />
+                • Cliquez ou glissez pour ajouter<br />
                 • 🔌 Câblage pour connecter<br />
                 • Double-clic pour ouvrir les apps<br />
                 • Clic droit pour les options

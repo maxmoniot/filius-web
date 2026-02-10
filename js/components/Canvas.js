@@ -56,6 +56,9 @@ const Canvas = React.forwardRef(function Canvas({
     // État pour le dragging d'annotations
     const [draggingAnnotation, setDraggingAnnotation] = React.useState(null);
     
+    // État pour le redimensionnement des rectangles
+    const [resizingRect, setResizingRect] = React.useState(null);
+    
     // État pour la sélection multiple (Ctrl+drag)
     const [selectionRect, setSelectionRect] = React.useState(null);
     const justFinishedSelection = React.useRef(false);
@@ -179,6 +182,61 @@ const Canvas = React.forwardRef(function Canvas({
             }
             return;
         }
+        
+        // Redimensionnement de rectangle en cours
+        if (resizingRect && ref.current) {
+            const canvasCoords = screenToCanvas(e.clientX, e.clientY);
+            const { id, handle, startX, startY, startWidth, startHeight, startRectX, startRectY } = resizingRect;
+            
+            const dx = canvasCoords.x - startX;
+            const dy = canvasCoords.y - startY;
+            
+            let newX = startRectX;
+            let newY = startRectY;
+            let newWidth = startWidth;
+            let newHeight = startHeight;
+            
+            // Selon la poignée utilisée, calculer les nouvelles dimensions
+            if (handle.includes('w')) {
+                newX = startRectX + dx;
+                newWidth = startWidth - dx;
+            }
+            if (handle.includes('e')) {
+                newWidth = startWidth + dx;
+            }
+            if (handle.includes('n')) {
+                newY = startRectY + dy;
+                newHeight = startHeight - dy;
+            }
+            if (handle.includes('s')) {
+                newHeight = startHeight + dy;
+            }
+            
+            // Dimensions minimales
+            const minSize = 20;
+            if (newWidth < minSize) {
+                if (handle.includes('w')) {
+                    newX = startRectX + startWidth - minSize;
+                }
+                newWidth = minSize;
+            }
+            if (newHeight < minSize) {
+                if (handle.includes('n')) {
+                    newY = startRectY + startHeight - minSize;
+                }
+                newHeight = minSize;
+            }
+            
+            setAnnotations(prev => ({
+                ...prev,
+                rects: prev.rects.map(r => 
+                    r.id === id 
+                        ? { ...r, x: newX, y: newY, width: newWidth, height: newHeight }
+                        : r
+                )
+            }));
+            return;
+        }
 
         // Sinon, comportement normal
         onMouseMove(e);
@@ -207,7 +265,7 @@ const Canvas = React.forwardRef(function Canvas({
                 currentY: canvasCoords.y
             }));
         }
-    }, [isPanning, panStart, onMouseMove, connecting, ref, screenToCanvas, drawingRect, draggingAnnotation, setAnnotations, selectionRect]);
+    }, [isPanning, panStart, onMouseMove, connecting, ref, screenToCanvas, drawingRect, draggingAnnotation, resizingRect, setAnnotations, selectionRect]);
 
     // Gère le mousedown sur le canvas
     const handleCanvasMouseDown = (e) => {
@@ -286,6 +344,12 @@ const Canvas = React.forwardRef(function Canvas({
         // Fin du dragging d'annotation
         if (draggingAnnotation) {
             setDraggingAnnotation(null);
+            return;
+        }
+        
+        // Fin du redimensionnement de rectangle
+        if (resizingRect) {
+            setResizingRect(null);
             return;
         }
         
@@ -656,14 +720,14 @@ const Canvas = React.forwardRef(function Canvas({
                     position: 'absolute',
                     top: 0,
                     left: 0,
-                    width: '100%',
-                    height: '100%',
+                    width: '5000px',
+                    height: '5000px',
                     transform: `translate(${offset.x}px, ${offset.y}px) scale(${scale})`,
                     transformOrigin: '0 0'
                 }}
             >
                 {/* SVG pour les connexions et paquets */}
-                <svg className="canvas-svg" style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', overflow: 'visible' }}>
+                <svg className="canvas-svg" style={{ position: 'absolute', top: 0, left: 0, width: '5000px', height: '5000px', overflow: 'visible' }}>
                     <defs>
                         <filter id="glow">
                             <feGaussianBlur stdDeviation="3" result="coloredBlur" />
@@ -688,94 +752,141 @@ const Canvas = React.forwardRef(function Canvas({
                         const isSelected = selectedAnnotation?.type === 'rect' && selectedAnnotation?.id === rect.id;
                         const isMultiSelected = selectedAnnotations.rects.includes(rect.id);
                         const showSelected = isSelected || isMultiSelected;
+                        const showHandles = isSelected && !isMultiSelected;
+                        
+                        // Positions des poignées de redimensionnement
+                        const handleSize = 8;
+                        const handles = showHandles ? [
+                            { id: 'nw', x: rect.x - handleSize/2, y: rect.y - handleSize/2, cursor: 'nwse-resize' },
+                            { id: 'n', x: rect.x + rect.width/2 - handleSize/2, y: rect.y - handleSize/2, cursor: 'ns-resize' },
+                            { id: 'ne', x: rect.x + rect.width - handleSize/2, y: rect.y - handleSize/2, cursor: 'nesw-resize' },
+                            { id: 'e', x: rect.x + rect.width - handleSize/2, y: rect.y + rect.height/2 - handleSize/2, cursor: 'ew-resize' },
+                            { id: 'se', x: rect.x + rect.width - handleSize/2, y: rect.y + rect.height - handleSize/2, cursor: 'nwse-resize' },
+                            { id: 's', x: rect.x + rect.width/2 - handleSize/2, y: rect.y + rect.height - handleSize/2, cursor: 'ns-resize' },
+                            { id: 'sw', x: rect.x - handleSize/2, y: rect.y + rect.height - handleSize/2, cursor: 'nesw-resize' },
+                            { id: 'w', x: rect.x - handleSize/2, y: rect.y + rect.height/2 - handleSize/2, cursor: 'ew-resize' },
+                        ] : [];
+                        
                         return (
-                            <rect
-                                key={rect.id}
-                                x={rect.x}
-                                y={rect.y}
-                                width={rect.width}
-                                height={rect.height}
-                                fill={rect.color}
-                                stroke={showSelected ? '#58a6ff' : rect.borderColor}
-                                strokeWidth={showSelected ? 3 : 2}
-                                rx="8"
-                                ry="8"
-                                style={{ 
-                                    pointerEvents: (textMode || rectMode) ? 'none' : 'auto', 
-                                    cursor: showSelected ? 'move' : 'pointer' 
-                                }}
-                                onClick={(e) => {
-                                    if (textMode || rectMode) return;
-                                    e.stopPropagation();
-                                    
-                                    // Ctrl+clic = toggle dans la multi-sélection
-                                    if (e.ctrlKey || e.metaKey) {
-                                        if (isMultiSelected) {
-                                            // Désélectionner ce rectangle
-                                            setSelectedAnnotations(prev => ({
-                                                ...prev,
-                                                rects: prev.rects.filter(id => id !== rect.id)
-                                            }));
-                                        } else {
-                                            // Ajouter à la sélection
-                                            setSelectedAnnotations(prev => ({
-                                                ...prev,
-                                                rects: [...prev.rects, rect.id]
-                                            }));
+                            <g key={rect.id}>
+                                <rect
+                                    x={rect.x}
+                                    y={rect.y}
+                                    width={rect.width}
+                                    height={rect.height}
+                                    fill={rect.color}
+                                    stroke={showSelected ? '#58a6ff' : rect.borderColor}
+                                    strokeWidth={showSelected ? 3 : 2}
+                                    rx="8"
+                                    ry="8"
+                                    style={{ 
+                                        pointerEvents: (textMode || rectMode) ? 'none' : 'auto', 
+                                        cursor: showSelected ? 'move' : 'pointer' 
+                                    }}
+                                    onClick={(e) => {
+                                        if (textMode || rectMode) return;
+                                        e.stopPropagation();
+                                        
+                                        // Ctrl+clic = toggle dans la multi-sélection
+                                        if (e.ctrlKey || e.metaKey) {
+                                            if (isMultiSelected) {
+                                                // Désélectionner ce rectangle
+                                                setSelectedAnnotations(prev => ({
+                                                    ...prev,
+                                                    rects: prev.rects.filter(id => id !== rect.id)
+                                                }));
+                                            } else {
+                                                // Ajouter à la sélection
+                                                setSelectedAnnotations(prev => ({
+                                                    ...prev,
+                                                    rects: [...prev.rects, rect.id]
+                                                }));
+                                            }
+                                            setSelectedAnnotation(null);
+                                            return;
                                         }
-                                        setSelectedAnnotation(null);
-                                        return;
-                                    }
-                                    
-                                    // Clic simple sans Ctrl
-                                    if (!isMultiSelected) {
-                                        setSelectedAnnotation({ type: 'rect', id: rect.id });
-                                        setSelectedDevice(null);
-                                        setSelectedDevices([]);
-                                        setSelectedAnnotations({ texts: [], rects: [] });
-                                        setSelectedConnection(null);
-                                    }
-                                }}
-                                onMouseDown={(e) => {
-                                    if (textMode || rectMode) return;
-                                    if (e.button !== 0) return;
-                                    e.stopPropagation();
-                                    
-                                    // Si fait partie d'une multi-sélection, déclencher le multi-drag
-                                    const hasMultiSelection = selectedDevices.length > 0 || 
-                                        selectedAnnotations.texts.length > 0 || 
-                                        selectedAnnotations.rects.length > 1 ||
-                                        (selectedAnnotations.rects.length === 1 && (selectedDevices.length > 0 || selectedAnnotations.texts.length > 0));
-                                    
-                                    if (isMultiSelected && hasMultiSelection && onAnnotationMultiDrag) {
+                                        
+                                        // Clic simple sans Ctrl
+                                        if (!isMultiSelected) {
+                                            setSelectedAnnotation({ type: 'rect', id: rect.id });
+                                            setSelectedDevice(null);
+                                            setSelectedDevices([]);
+                                            setSelectedAnnotations({ texts: [], rects: [] });
+                                            setSelectedConnection(null);
+                                        }
+                                    }}
+                                    onMouseDown={(e) => {
+                                        if (textMode || rectMode) return;
+                                        if (e.button !== 0) return;
+                                        e.stopPropagation();
+                                        
+                                        // Si fait partie d'une multi-sélection, déclencher le multi-drag
+                                        const hasMultiSelection = selectedDevices.length > 0 || 
+                                            selectedAnnotations.texts.length > 0 || 
+                                            selectedAnnotations.rects.length > 1 ||
+                                            (selectedAnnotations.rects.length === 1 && (selectedDevices.length > 0 || selectedAnnotations.texts.length > 0));
+                                        
+                                        if (isMultiSelected && hasMultiSelection && onAnnotationMultiDrag) {
+                                            const canvasCoords = screenToCanvas(e.clientX, e.clientY);
+                                            onAnnotationMultiDrag(e, canvasCoords);
+                                            return;
+                                        }
+                                        
+                                        if (!isSelected && !isMultiSelected) {
+                                            setSelectedAnnotation({ type: 'rect', id: rect.id });
+                                            setSelectedDevice(null);
+                                            setSelectedDevices([]);
+                                            setSelectedAnnotations({ texts: [], rects: [] });
+                                            setSelectedConnection(null);
+                                        }
+                                        
                                         const canvasCoords = screenToCanvas(e.clientX, e.clientY);
-                                        onAnnotationMultiDrag(e, canvasCoords);
-                                        return;
-                                    }
-                                    
-                                    if (!isSelected && !isMultiSelected) {
-                                        setSelectedAnnotation({ type: 'rect', id: rect.id });
-                                        setSelectedDevice(null);
-                                        setSelectedDevices([]);
-                                        setSelectedAnnotations({ texts: [], rects: [] });
-                                        setSelectedConnection(null);
-                                    }
-                                    
-                                    const canvasCoords = screenToCanvas(e.clientX, e.clientY);
-                                    setDraggingAnnotation({
-                                        type: 'rect',
-                                        id: rect.id,
-                                        offsetX: canvasCoords.x - rect.x,
-                                        offsetY: canvasCoords.y - rect.y
-                                    });
-                                }}
-                                onContextMenu={(e) => {
-                                    if (textMode || rectMode) return;
-                                    e.preventDefault();
-                                    e.stopPropagation();
-                                    onContextMenu(e, 'rect', rect);
-                                }}
-                            />
+                                        setDraggingAnnotation({
+                                            type: 'rect',
+                                            id: rect.id,
+                                            offsetX: canvasCoords.x - rect.x,
+                                            offsetY: canvasCoords.y - rect.y
+                                        });
+                                    }}
+                                    onContextMenu={(e) => {
+                                        if (textMode || rectMode) return;
+                                        e.preventDefault();
+                                        e.stopPropagation();
+                                        onContextMenu(e, 'rect', rect);
+                                    }}
+                                />
+                                {/* Poignées de redimensionnement */}
+                                {handles.map(handle => (
+                                    <rect
+                                        key={handle.id}
+                                        x={handle.x}
+                                        y={handle.y}
+                                        width={handleSize}
+                                        height={handleSize}
+                                        fill="#58a6ff"
+                                        stroke="#fff"
+                                        strokeWidth="1"
+                                        rx="2"
+                                        ry="2"
+                                        style={{ cursor: handle.cursor, pointerEvents: 'auto' }}
+                                        onMouseDown={(e) => {
+                                            e.stopPropagation();
+                                            if (e.button !== 0) return;
+                                            const canvasCoords = screenToCanvas(e.clientX, e.clientY);
+                                            setResizingRect({
+                                                id: rect.id,
+                                                handle: handle.id,
+                                                startX: canvasCoords.x,
+                                                startY: canvasCoords.y,
+                                                startWidth: rect.width,
+                                                startHeight: rect.height,
+                                                startRectX: rect.x,
+                                                startRectY: rect.y
+                                            });
+                                        }}
+                                    />
+                                ))}
+                            </g>
                         );
                     })}
 
@@ -830,9 +941,9 @@ const Canvas = React.forwardRef(function Canvas({
                             strokeWidth = 5;
                             filter = 'url(#glowGreen)';
                         } else if (isSelected) {
-                            strokeColor = 'var(--accent-cyan)';
+                            strokeColor = '#3fb950';
                             strokeWidth = 4;
-                            filter = 'url(#glow)';
+                            filter = 'url(#glowGreen)';
                         }
 
                         return (
@@ -842,13 +953,18 @@ const Canvas = React.forwardRef(function Canvas({
                                     x2={to.x} y2={to.y}
                                     stroke="transparent"
                                     strokeWidth="20"
-                                    style={{ cursor: 'pointer' }}
-                                    onClick={() => {
+                                    style={{ cursor: 'pointer', pointerEvents: 'stroke' }}
+                                    onClick={(e) => {
+                                        e.stopPropagation();
                                         if (textMode || rectMode) return;
                                         setSelectedConnection(conn.id);
+                                        setSelectedDevice(null);
+                                        setSelectedDevices([]);
                                         setSelectedAnnotation(null);
+                                        setSelectedAnnotations({ texts: [], rects: [] });
                                     }}
                                     onContextMenu={(e) => {
+                                        e.stopPropagation();
                                         if (wireMode) {
                                             e.preventDefault();
                                             setWireMode(false);

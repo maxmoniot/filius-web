@@ -26,13 +26,17 @@ function FiliusWeb() {
     
     // Zoom et pan du canvas
     const [canvasScale, setCanvasScale] = React.useState(1);
-    const [canvasOffset, setCanvasOffset] = React.useState({ x: 0, y: 0 });
+    // Offset initial pour centrer la vue sur le milieu du canvas virtuel (2500, 2500)
+    const [canvasOffset, setCanvasOffset] = React.useState({ x: -2000, y: -1500 });
     
     // Annotations (textes et rectangles)
     const [annotations, setAnnotations] = React.useState({ texts: [], rects: [] });
     const [textMode, setTextMode] = React.useState(false);
     const [rectMode, setRectMode] = React.useState(false);
     const [selectedAnnotation, setSelectedAnnotation] = React.useState(null);
+    
+    // Drag depuis le panneau de composants (système custom plus réactif)
+    const [componentDrag, setComponentDrag] = React.useState(null);
     
     // Historique pour undo/redo (max 50 états)
     const [history, setHistory] = React.useState([]);
@@ -42,6 +46,27 @@ function FiliusWeb() {
 
     const canvasRef = React.useRef(null);
     const fileInputRef = React.useRef(null);
+    
+    // ========== ÉCRAN DE CHARGEMENT ==========
+    React.useEffect(() => {
+        // Cacher l'écran de chargement quand l'app est prête
+        const loadingScreen = document.getElementById('loading-screen');
+        if (loadingScreen) {
+            loadingScreen.classList.add('hidden');
+            // Supprimer complètement après l'animation
+            setTimeout(() => {
+                loadingScreen.remove();
+            }, 500);
+        }
+    }, []);
+    
+    // ========== GESTION DU MODE CÂBLAGE ==========
+    // Quand on quitte le mode câblage, annuler la connexion en cours
+    React.useEffect(() => {
+        if (!wireMode && connecting) {
+            setConnecting(null);
+        }
+    }, [wireMode]);
     
     // ========== GESTION DE L'HISTORIQUE ==========
     // Sauvegarder l'état actuel dans l'historique
@@ -204,6 +229,56 @@ function FiliusWeb() {
         return () => window.removeEventListener('keydown', handleKeyDown);
     }, [selectedDevice, selectedDevices, selectedAnnotations, selectedConnection, selectedAnnotation, devices, addLog, undo, redo]);
 
+    // Gestion du drag personnalisé depuis le panneau de composants
+    React.useEffect(() => {
+        if (!componentDrag) return;
+        
+        const handleMouseMove = (e) => {
+            const dx = Math.abs(e.clientX - componentDrag.startX);
+            const dy = Math.abs(e.clientY - componentDrag.startY);
+            // Activer le mode drag seulement si on a bougé de plus de 5 pixels
+            if (dx > 5 || dy > 5) {
+                setComponentDrag(prev => prev ? { ...prev, x: e.clientX, y: e.clientY, isDragging: true } : null);
+            }
+        };
+        
+        const handleMouseUp = (e) => {
+            if (componentDrag && componentDrag.isDragging && canvasRef.current) {
+                const rect = canvasRef.current.getBoundingClientRect();
+                // Vérifier si on est au-dessus du canvas
+                if (e.clientX >= rect.left && e.clientX <= rect.right &&
+                    e.clientY >= rect.top && e.clientY <= rect.bottom) {
+                    // Calculer la position dans le canvas
+                    const canvasX = (e.clientX - rect.left - canvasOffset.x) / canvasScale;
+                    const canvasY = (e.clientY - rect.top - canvasOffset.y) / canvasScale;
+                    addDeviceAtPosition(componentDrag.type, canvasX, canvasY);
+                }
+            }
+            setComponentDrag(null);
+        };
+        
+        window.addEventListener('mousemove', handleMouseMove);
+        window.addEventListener('mouseup', handleMouseUp);
+        
+        return () => {
+            window.removeEventListener('mousemove', handleMouseMove);
+            window.removeEventListener('mouseup', handleMouseUp);
+        };
+    }, [componentDrag, canvasOffset, canvasScale, addDeviceAtPosition]);
+
+    // Fonction pour démarrer le drag depuis le panneau
+    const startComponentDrag = React.useCallback((type, e) => {
+        e.preventDefault();
+        setComponentDrag({
+            type,
+            startX: e.clientX,
+            startY: e.clientY,
+            x: e.clientX,
+            y: e.clientY,
+            isDragging: false
+        });
+    }, []);
+
     // ========== LOGGING ==========
     const addLog = React.useCallback((message, type = 'info') => {
         setLogs(prev => [
@@ -264,6 +339,96 @@ function FiliusWeb() {
         setDevices(prev => [...prev, newDevice]);
         addLog(`Duplication: ${newDevice.name}`, 'success');
     }, [devices, addLog]);
+    
+    // Dupliquer tous les éléments sélectionnés
+    const duplicateSelection = React.useCallback(() => {
+        const newDevices = [];
+        const deviceIdMap = {}; // Pour mapper ancien ID -> nouveau ID pour les connexions
+        
+        // Dupliquer les appareils sélectionnés
+        selectedDevices.forEach((id, index) => {
+            const device = devices.find(d => d.id === id);
+            if (!device) return;
+            
+            const newId = generateId();
+            deviceIdMap[id] = newId;
+            
+            const newDevice = {
+                ...deepClone(device),
+                id: newId,
+                name: `${device.name} (copie)`,
+                x: device.x + 50,
+                y: device.y + 50,
+                mac: generateMAC(),
+                ip: device.ip ? incrementIP(device.ip) : null
+            };
+            newDevices.push(newDevice);
+        });
+        
+        if (newDevices.length > 0) {
+            setDevices(prev => [...prev, ...newDevices]);
+            
+            // Dupliquer les connexions entre les appareils dupliqués
+            const newConnections = [];
+            connections.forEach(conn => {
+                if (deviceIdMap[conn.from] && deviceIdMap[conn.to]) {
+                    newConnections.push({
+                        id: generateId(),
+                        from: deviceIdMap[conn.from],
+                        to: deviceIdMap[conn.to]
+                    });
+                }
+            });
+            
+            if (newConnections.length > 0) {
+                setConnections(prev => [...prev, ...newConnections]);
+            }
+            
+            addLog(`Duplication: ${newDevices.length} appareil(s)`, 'success');
+        }
+        
+        // Dupliquer les textes sélectionnés
+        if (selectedAnnotations.texts.length > 0) {
+            const newTexts = selectedAnnotations.texts.map(textId => {
+                const text = annotations.texts.find(t => t.id === textId);
+                if (!text) return null;
+                return {
+                    ...text,
+                    id: 'text-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9),
+                    x: text.x + 50,
+                    y: text.y + 50
+                };
+            }).filter(Boolean);
+            
+            if (newTexts.length > 0) {
+                setAnnotations(prev => ({
+                    ...prev,
+                    texts: [...prev.texts, ...newTexts]
+                }));
+            }
+        }
+        
+        // Dupliquer les rectangles sélectionnés
+        if (selectedAnnotations.rects.length > 0) {
+            const newRects = selectedAnnotations.rects.map(rectId => {
+                const rect = annotations.rects.find(r => r.id === rectId);
+                if (!rect) return null;
+                return {
+                    ...rect,
+                    id: 'rect-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9),
+                    x: rect.x + 50,
+                    y: rect.y + 50
+                };
+            }).filter(Boolean);
+            
+            if (newRects.length > 0) {
+                setAnnotations(prev => ({
+                    ...prev,
+                    rects: [...prev.rects, ...newRects]
+                }));
+            }
+        }
+    }, [selectedDevices, selectedAnnotations, devices, connections, annotations, addLog]);
 
     // ========== GESTION DES CONNEXIONS ==========
     const startConnection = React.useCallback((deviceId) => {
@@ -271,6 +436,13 @@ function FiliusWeb() {
     }, []);
 
     const completeConnection = React.useCallback((deviceId) => {
+        // Si deviceId est null ou undefined, c'est une annulation
+        if (!deviceId) {
+            setConnecting(null);
+            return;
+        }
+        
+        // Si pas de connexion en cours ou clic sur le même appareil
         if (!connecting || connecting === deviceId) {
             setConnecting(null);
             return;
@@ -1296,6 +1468,7 @@ function FiliusWeb() {
                     {/* Panneau composants */}
                     <ComponentPanel 
                         addDevice={addDevice}
+                        startComponentDrag={startComponentDrag}
                         wireMode={wireMode}
                         setWireMode={setWireMode}
                         textMode={textMode}
@@ -1397,6 +1570,8 @@ function FiliusWeb() {
                 {contextMenu && (
                     <ContextMenu
                         {...contextMenu}
+                        selectedDevices={selectedDevices}
+                        selectedAnnotations={selectedAnnotations}
                         onClose={() => setContextMenu(null)}
                         onDelete={
                             contextMenu.type === 'device' ? () => deleteDevice(contextMenu.data.id) :
@@ -1411,8 +1586,19 @@ function FiliusWeb() {
                             null
                         }
                         onDuplicate={
-                            contextMenu.type === 'device' ? () => duplicateDevice(contextMenu.data.id) : null
+                            contextMenu.type === 'device' ? () => {
+                                // Si plusieurs éléments sont sélectionnés, dupliquer tout
+                                const hasMultiSelection = selectedDevices.length > 1 || 
+                                    selectedAnnotations.texts.length > 0 || 
+                                    selectedAnnotations.rects.length > 0;
+                                if (hasMultiSelection && selectedDevices.includes(contextMenu.data.id)) {
+                                    duplicateSelection();
+                                } else {
+                                    duplicateDevice(contextMenu.data.id);
+                                }
+                            } : null
                         }
+                        onDuplicateSelection={duplicateSelection}
                         onSendToBack={
                             contextMenu.type === 'rect' ? () => {
                                 // Trouver le zIndex minimum et mettre ce rect en dessous
@@ -1433,6 +1619,40 @@ function FiliusWeb() {
 
                 {/* Modale d'aide */}
                 {showHelp && <HelpModal onClose={() => setShowHelp(false)} />}
+                
+                {/* Élément fantôme pour le drag depuis le panneau de composants */}
+                {componentDrag && componentDrag.isDragging && (
+                    <div style={{
+                        position: 'fixed',
+                        left: componentDrag.x - 35,
+                        top: componentDrag.y - 35,
+                        width: '70px',
+                        height: '70px',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        background: 'rgba(30, 41, 59, 0.9)',
+                        border: '2px solid var(--accent-blue)',
+                        borderRadius: '12px',
+                        pointerEvents: 'none',
+                        zIndex: 10000,
+                        boxShadow: '0 8px 32px rgba(0,0,0,0.4)'
+                    }}>
+                        {DEVICE_TYPES[componentDrag.type]?.image ? (
+                            <img 
+                                src={DEVICE_TYPES[componentDrag.type].image} 
+                                alt=""
+                                style={{ width: '40px', height: '40px', objectFit: 'contain' }}
+                            />
+                        ) : (
+                            <span style={{ fontSize: '32px' }}>{DEVICE_TYPES[componentDrag.type]?.icon}</span>
+                        )}
+                        <span style={{ fontSize: '10px', color: 'var(--text-dim)', marginTop: '2px' }}>
+                            {DEVICE_TYPES[componentDrag.type]?.name}
+                        </span>
+                    </div>
+                )}
             </div>
         </NetworkContext.Provider>
     );

@@ -4,8 +4,13 @@
    (Mode unifié : toutes les options toujours disponibles)
    ============================================ */
 
-function ContextMenu({ x, y, type, data, onClose, onDelete, onDuplicate, onSendToBack, onOpenApp }) {
+function ContextMenu({ x, y, type, data, onClose, onDelete, onDuplicate, onDuplicateSelection, onSendToBack, onOpenApp, selectedDevices = [], selectedAnnotations = { texts: [], rects: [] } }) {
     const menuRef = React.useRef(null);
+
+    // Calculer si on a une multi-sélection
+    const totalSelected = selectedDevices.length + selectedAnnotations.texts.length + selectedAnnotations.rects.length;
+    const hasMultiSelection = totalSelected > 1;
+    const isPartOfMultiSelection = type === 'device' && selectedDevices.includes(data?.id);
 
     // Ajuster la position pour ne pas sortir de l'écran
     React.useEffect(() => {
@@ -52,11 +57,19 @@ function ContextMenu({ x, y, type, data, onClose, onDelete, onDuplicate, onSendT
                     )}
 
                     {/* Options d'édition */}
-                    <ContextMenuItem
-                        icon="📋"
-                        label="Dupliquer"
-                        onClick={() => { onDuplicate?.(); onClose(); }}
-                    />
+                    {hasMultiSelection && isPartOfMultiSelection ? (
+                        <ContextMenuItem
+                            icon="📋"
+                            label={`Dupliquer tout (${totalSelected} éléments)`}
+                            onClick={() => { onDuplicateSelection?.(); onClose(); }}
+                        />
+                    ) : (
+                        <ContextMenuItem
+                            icon="📋"
+                            label="Dupliquer"
+                            onClick={() => { onDuplicate?.(); onClose(); }}
+                        />
+                    )}
                     <div className="context-menu-separator" />
                     <ContextMenuItem
                         icon="🗑️"

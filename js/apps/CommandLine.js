@@ -140,6 +140,8 @@ function CommandLineApp({ device }) {
             return { reachable: false, error: 'Interface source non configuree.' };
         }
 
+        const sourceMask = sourceDevice.mask || '255.255.255.0';
+        
         const targetDevice = findDeviceByIP(targetIP);
         if (!targetDevice) {
             return { reachable: false, error: 'Hote de destination inaccessible.' };
@@ -149,36 +151,66 @@ function CommandLineApp({ device }) {
             return { reachable: true, target: targetDevice, path: [sourceDevice.id], isLocal: true };
         }
 
-        const sameNet = isSameNetwork(sourceDevice.ip, targetIP, sourceDevice.mask);
+        const sameNet = isSameNetwork(sourceDevice.ip, targetIP, sourceMask);
 
         if (sameNet) {
+            // Même réseau : vérifier que le chemin ne traverse pas de routeur
+            // (les routeurs ne font pas de forwarding L2, seulement L3)
             const path = findPhysicalPath(sourceDevice.id, targetDevice.id);
             if (!path) {
                 return { reachable: false, error: 'Hote de destination inaccessible (pas de route).' };
             }
+            
+            // Vérifier qu'aucun routeur n'est sur le chemin (sauf aux extrémités)
+            for (let i = 1; i < path.length - 1; i++) {
+                const intermediateDevice = devices.find(d => d.id === path[i]);
+                if (intermediateDevice?.type === 'ROUTER') {
+                    // Un routeur est sur le chemin - il faut des passerelles configurées
+                    // même si les IPs sont sur le même réseau logique
+                    return { reachable: false, error: 'Hote de destination inaccessible (routeur sur le chemin sans configuration).' };
+                }
+            }
+            
             return { reachable: true, target: targetDevice, path };
         }
 
-        if (!sourceDevice.gateway) {
-            return { reachable: false, error: 'Reseau de destination inaccessible (pas de passerelle).' };
+        // Réseaux différents : vérification stricte des passerelles
+        
+        // 1. La source doit avoir une passerelle configurée
+        if (!sourceDevice.gateway || sourceDevice.gateway.trim() === '') {
+            return { reachable: false, error: 'Reseau de destination inaccessible (pas de passerelle configuree).' };
         }
 
+        // 2. La passerelle doit être sur le même réseau que la source
+        if (!isSameNetwork(sourceDevice.ip, sourceDevice.gateway, sourceMask)) {
+            return { reachable: false, error: `Passerelle ${sourceDevice.gateway} inaccessible (pas sur le meme reseau que ${sourceDevice.ip}).` };
+        }
+
+        // 3. La passerelle doit exister sur le réseau
         const gatewayDevice = findDeviceByIP(sourceDevice.gateway);
         if (!gatewayDevice) {
-            return { reachable: false, error: 'Passerelle inaccessible.' };
+            return { reachable: false, error: `Passerelle ${sourceDevice.gateway} introuvable sur le reseau.` };
         }
 
+        // 4. La passerelle doit être un routeur
+        if (gatewayDevice.type !== 'ROUTER') {
+            return { reachable: false, error: `Passerelle ${sourceDevice.gateway} n'est pas un routeur.` };
+        }
+
+        // 5. Vérifier la connexion physique vers la passerelle
         const pathToGateway = findPhysicalPath(sourceDevice.id, gatewayDevice.id);
         if (!pathToGateway) {
             return { reachable: false, error: 'Passerelle inaccessible (pas de connexion physique).' };
         }
 
+        // 6. Le routeur doit avoir une interface sur le réseau de destination
         let routerCanReach = false;
         let routerInterface = null;
+        const targetMask = targetDevice.mask || '255.255.255.0';
         
         if (gatewayDevice.interfaces) {
             for (const iface of gatewayDevice.interfaces) {
-                if (isSameNetwork(iface.ip, targetIP, iface.mask || '255.255.255.0')) {
+                if (iface.ip && isSameNetwork(iface.ip, targetIP, iface.mask || targetMask)) {
                     routerCanReach = true;
                     routerInterface = iface;
                     break;
@@ -187,24 +219,29 @@ function CommandLineApp({ device }) {
         }
 
         if (!routerCanReach) {
-            return { reachable: false, error: 'Reseau de destination inaccessible (routeur mal configure).' };
+            return { reachable: false, error: 'Reseau de destination inaccessible (routeur n\'a pas d\'interface sur ce reseau).' };
         }
 
+        // 7. Vérifier la connexion physique du routeur vers la cible
         const pathFromGateway = findPhysicalPath(gatewayDevice.id, targetDevice.id);
         if (!pathFromGateway) {
             return { reachable: false, error: 'Hote de destination inaccessible (pas de route depuis le routeur).' };
         }
 
-        // Vérifier que la cible peut répondre (a une passerelle configurée pour le retour)
-        // La cible doit avoir une passerelle configurée pointant vers le routeur
-        if (!targetDevice.gateway) {
-            return { reachable: false, error: 'Hote de destination inaccessible (pas de passerelle configuree sur la cible).' };
+        // 8. La cible doit avoir une passerelle configurée pour le retour
+        if (!targetDevice.gateway || targetDevice.gateway.trim() === '') {
+            return { reachable: false, error: 'Delai d\'attente depasse (pas de passerelle configuree sur la cible pour la reponse).' };
         }
 
-        // Vérifier que la passerelle de la cible est bien une interface du routeur
+        // 9. La passerelle de la cible doit être sur le même réseau que la cible
+        if (!isSameNetwork(targetDevice.ip, targetDevice.gateway, targetMask)) {
+            return { reachable: false, error: `Delai d\'attente depasse (passerelle ${targetDevice.gateway} de la cible pas sur son reseau).` };
+        }
+
+        // 10. La passerelle de la cible doit être une interface du routeur
         const targetGatewayValid = gatewayDevice.interfaces?.some(iface => iface.ip === targetDevice.gateway);
         if (!targetGatewayValid) {
-            return { reachable: false, error: 'Hote de destination inaccessible (passerelle de la cible mal configuree).' };
+            return { reachable: false, error: `Delai d\'attente depasse (passerelle ${targetDevice.gateway} de la cible ne correspond pas au routeur).` };
         }
 
         const fullPath = [...pathToGateway];

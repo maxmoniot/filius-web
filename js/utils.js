@@ -158,14 +158,31 @@ function canRoutePacket(devices, connections, sourceDevice, destDevice) {
     const sourceMask = sourceDevice.mask || '255.255.255.0';
     const destMask = destDevice.mask || '255.255.255.0';
     
-    // Même réseau ? Pas besoin de routeur
+    // Même réseau ? Vérifier qu'il n'y a pas de routeur sur le chemin
     if (isSameNetwork(sourceDevice.ip, destDevice.ip, sourceMask)) {
+        // Trouver le chemin physique
+        const path = findPath(devices, connections, sourceDevice.id, destDevice.id);
+        if (!path) {
+            return { canRoute: false, reason: 'Pas de connexion physique' };
+        }
+        
+        // Vérifier qu'aucun routeur n'est sur le chemin (sauf aux extrémités)
+        for (let i = 1; i < path.length - 1; i++) {
+            const intermediateDevice = devices.find(d => d.id === path[i]);
+            if (intermediateDevice?.type === 'ROUTER') {
+                return { 
+                    canRoute: false, 
+                    reason: `Routeur ${intermediateDevice.name} sur le chemin - passerelles requises` 
+                };
+            }
+        }
+        
         return { canRoute: true, directConnection: true };
     }
     
     // Réseaux différents : besoin d'un routeur
     // 1. La source doit avoir une passerelle configurée
-    if (!sourceDevice.gateway) {
+    if (!sourceDevice.gateway || sourceDevice.gateway.trim() === '') {
         return { canRoute: false, reason: `Passerelle non configurée sur ${sourceDevice.name}` };
     }
     
@@ -215,6 +232,31 @@ function canRoutePacket(devices, connections, sourceDevice, destDevice) {
         };
     }
     
+    // 6. Vérifier que la cible a une passerelle configurée pour le retour
+    if (!destDevice.gateway || destDevice.gateway.trim() === '') {
+        return { 
+            canRoute: false, 
+            reason: `Passerelle non configurée sur ${destDevice.name} (réponse impossible)` 
+        };
+    }
+    
+    // 7. La passerelle de la cible doit être sur le même réseau que la cible
+    if (!isSameNetwork(destDevice.ip, destDevice.gateway, destMask)) {
+        return { 
+            canRoute: false, 
+            reason: `Passerelle ${destDevice.gateway} de ${destDevice.name} n'est pas sur son réseau` 
+        };
+    }
+    
+    // 8. La passerelle de la cible doit être une interface du routeur
+    const targetGatewayValid = gatewayDevice.interfaces?.some(iface => iface.ip === destDevice.gateway);
+    if (!targetGatewayValid) {
+        return { 
+            canRoute: false, 
+            reason: `Passerelle ${destDevice.gateway} de ${destDevice.name} ne correspond pas au routeur` 
+        };
+    }
+    
     return { canRoute: true, router: gatewayDevice, routerInterface: matchingInterface, directConnection: false };
 }
 
@@ -248,9 +290,10 @@ function createDevice(type, existingDevices, x, y) {
     const deviceType = DEVICE_TYPES[type];
     const count = existingDevices.filter(d => d.type === type).length;
 
-    // Position par défaut si non spécifiée
-    const posX = (x !== undefined) ? x : 150 + Math.random() * 300;
-    const posY = (y !== undefined) ? y : 100 + Math.random() * 200;
+    // Position par défaut au centre du canvas virtuel (5000x5000)
+    // Si non spécifiée, placer autour de (2500, 2000) avec un peu d'aléatoire
+    const posX = (x !== undefined) ? x : 2350 + Math.random() * 300;
+    const posY = (y !== undefined) ? y : 1850 + Math.random() * 300;
 
     const device = {
         id: generateId(),
@@ -368,7 +411,7 @@ function canReachInternet(devices, connections, sourceDevice) {
     // Il y a un routeur sur le chemin → on doit vérifier la configuration de routage
     // La source doit avoir une passerelle configurée vers ce routeur
     
-    if (!sourceDevice.gateway) {
+    if (!sourceDevice.gateway || sourceDevice.gateway.trim() === '') {
         return { 
             canReach: false, 
             reason: `Passerelle non configurée sur ${sourceDevice.name}` 
