@@ -889,7 +889,13 @@ function CorrectionApp() {
         let csv='\ufeff'+'Fichier;Note;Barème';
         if(results[0]?.gradeResult) results[0].gradeResult.details.forEach(d=>{csv+=';'+d.category.replace(/[^\w\sàéèêëîïôùûüÿçÀÉ]/g,'').trim();});
         csv+='\n';
-        results.forEach(r=>{csv+=`${r.filename};${String(r.score).replace('.',',')};${String(r.maxScore).replace('.',',')}`;if(r.gradeResult)r.gradeResult.details.forEach(d=>{csv+=';'+String(d.score).replace('.',',')+'/'+String(d.max).replace('.',',');});csv+='\n';});
+        results.forEach(r=>{
+            csv+=`${r.filename};${r.score.toFixed(1).replace('.',',')};${r.maxScore.toFixed(1).replace('.',',')}`;
+            if(r.gradeResult) r.gradeResult.details.forEach(d=>{
+                csv+=';'+d.score.toFixed(1).replace('.',',')+'/'+d.max.toFixed(1).replace('.',',');
+            });
+            csv+='\n';
+        });
         const blob=new Blob([csv],{type:'text/csv;charset=utf-8'});const url=URL.createObjectURL(blob);
         const a=document.createElement('a');a.href=url;a.download='correction_filius.csv';document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(url);
     };
