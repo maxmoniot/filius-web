@@ -4,6 +4,11 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Filius Web - Correction automatique</title>
+    <link rel="icon" type="image/x-icon" href="favicon.ico">
+    <link rel="icon" type="image/png" sizes="32x32" href="favicon-32x32.png">
+    <link rel="icon" type="image/png" sizes="16x16" href="favicon-16x16.png">
+    <link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png">
+    <link rel="manifest" href="site.webmanifest">
     <script src="lib/react.min.js"></script>
     <script src="lib/react-dom.min.js"></script>
     <script src="lib/babel.min.js"></script>
@@ -360,11 +365,24 @@ function gradeProject(project, criteria, blueprint) {
     if (criteria.structure?.enabled) {
         const pts = criteria.structure.points;
         const checks = []; let earned=0, total=0;
-        for (const [type, min] of Object.entries(blueprint.deviceCounts)) {
+
+        // Merge PC+LAPTOP counts (interchangeable) and filter to known types only
+        const knownTypes = ['PC','LAPTOP','SERVER','SWITCH','ROUTER','MODEM'];
+        const rawCounts = blueprint.deviceCounts;
+        const refCounts = {};
+        for (const t of knownTypes) { if (rawCounts[t] > 0) refCounts[t] = rawCounts[t]; }
+        const pcLaptopRef = (refCounts.PC||0) + (refCounts.LAPTOP||0);
+        delete refCounts.PC; delete refCounts.LAPTOP;
+        if (pcLaptopRef > 0) refCounts['PC/Portable'] = pcLaptopRef;
+
+        const stuCounts = stu.countDevices();
+        const pcLaptopStu = (stuCounts.PC||0) + (stuCounts.LAPTOP||0);
+
+        for (const [type, min] of Object.entries(refCounts)) {
             if (min<=0) continue;
             if (type==='SWITCH' && !criteria.structure.checkSwitchCount) continue;
             total++;
-            const actual = stu.countDevices()[type]||0;
+            const actual = type === 'PC/Portable' ? pcLaptopStu : (stuCounts[type]||0);
             const ok = actual>=min; if(ok) earned++;
             checks.push({ label: `${type}: ${actual}/${min}`, ok });
         }
