@@ -4,11 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Filius Web - Correction automatique</title>
-    <link rel="icon" type="image/x-icon" href="favicon.ico">
-    <link rel="icon" type="image/png" sizes="32x32" href="favicon-32x32.png">
-    <link rel="icon" type="image/png" sizes="16x16" href="favicon-16x16.png">
-    <link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png">
-    <link rel="manifest" href="site.webmanifest">
+    <link rel="icon" type="image/svg+xml" href="favicon.svg">
     <script src="lib/react.min.js"></script>
     <script src="lib/react-dom.min.js"></script>
     <script src="lib/babel.min.js"></script>
@@ -353,7 +349,14 @@ function buildReferenceBlueprint(project) {
 //  GRADING ENGINE v5
 // ================================================================
 function gradeProject(project, criteria, blueprint) {
-    const stu = new TopologyAnalyzer(project);
+    // Exclure les appareils orphelins (non connectés) de la correction
+    const connIds = new Set();
+    (project.connections||[]).forEach(c => { connIds.add(c.from); connIds.add(c.to); });
+    const filteredProject = {
+        ...project,
+        devices: (project.devices||[]).filter(d => connIds.has(d.id)),
+    };
+    const stu = new TopologyAnalyzer(filteredProject);
     const res = { total: 0, maxTotal: 0, details: [] };
     const subnets = stu.identifySubnets();
     const endpointNetworks = stu.getEndpointNetworks();
