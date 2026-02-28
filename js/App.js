@@ -560,9 +560,14 @@ function FiliusWeb() {
     }, [connections, devices, getActiveModems]);
 
     const findDeviceByIP = React.useCallback((ip) => {
-        // Chercher par IP privée
-        let device = devices.find(d => d.ip === ip);
-        if (device) return device;
+        // Chercher par IP privée — préférer les appareils connectés
+        const matches = devices.filter(d => d.ip === ip);
+        if (matches.length === 1) return matches[0];
+        if (matches.length > 1) {
+            // Préférer celui qui a des connexions
+            const connected = matches.find(d => connections.some(c => c.from === d.id || c.to === d.id));
+            return connected || matches[0];
+        }
 
         // Chercher dans les interfaces des routeurs
         for (const dev of devices) {
@@ -570,11 +575,11 @@ function FiliusWeb() {
         }
 
         // Chercher par IP publique (modems)
-        device = devices.find(d => d.publicIP === ip);
-        if (device) return device;
+        const modemMatch = devices.find(d => d.publicIP === ip);
+        if (modemMatch) return modemMatch;
 
         return null;
-    }, [devices]);
+    }, [devices, connections]);
 
     // Vérifie la configuration NAT d'un modem pour un protocole donné
     // Retourne { modem, enabled, targetIP, internalDevice } ou null

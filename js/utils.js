@@ -215,24 +215,33 @@ function isSameNetwork(ip1, ip2, mask) {
 }
 
 // Trouve un appareil par son IP (y compris les interfaces de routeur)
-function findDeviceByIPAddress(devices, ip) {
+function findDeviceByIPAddress(devices, ip, connections) {
     if (!ip) return null;
     
+    // Collect all matches
+    const matches = [];
     for (const dev of devices) {
         // Check main IP
         if (dev.ip === ip) {
-            return { device: dev, interface: null };
+            matches.push({ device: dev, interface: null });
         }
         // Check router interfaces
         if (dev.interfaces) {
             for (const iface of dev.interfaces) {
                 if (iface.ip === ip) {
-                    return { device: dev, interface: iface };
+                    matches.push({ device: dev, interface: iface });
                 }
             }
         }
     }
-    return null;
+    if (matches.length === 0) return null;
+    if (matches.length === 1) return matches[0];
+    // Prefer connected device
+    if (connections) {
+        const connected = matches.find(m => connections.some(c => c.from === m.device.id || c.to === m.device.id));
+        if (connected) return connected;
+    }
+    return matches[0];
 }
 
 // Vérifie si un paquet peut être routé de sourceDevice vers destDevice
@@ -288,7 +297,7 @@ function canRoutePacket(devices, connections, sourceDevice, destDevice) {
     }
     
     // 3. Trouver l'appareil qui a l'IP de la passerelle
-    const gatewayResult = findDeviceByIPAddress(devices, sourceDevice.gateway);
+    const gatewayResult = findDeviceByIPAddress(devices, sourceDevice.gateway, connections);
     
     if (!gatewayResult) {
         return { canRoute: false, reason: `Passerelle ${sourceDevice.gateway} introuvable sur le réseau` };
@@ -520,7 +529,7 @@ function canReachInternet(devices, connections, sourceDevice) {
     }
     
     // Vérifier que la passerelle existe (correspond à une interface du routeur)
-    const gatewayResult = findDeviceByIPAddress(devices, sourceDevice.gateway);
+    const gatewayResult = findDeviceByIPAddress(devices, sourceDevice.gateway, connections);
     
     if (!gatewayResult) {
         return { 

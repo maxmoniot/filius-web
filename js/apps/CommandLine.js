@@ -4,7 +4,7 @@
    ============================================ */
 
 function CommandLineApp({ device }) {
-    const { devices, connections, sendPacket, updateDevice } = useNetwork();
+    const { devices, connections, sendPacket, updateDevice, findDeviceByIP } = useNetwork();
 
     // Logo ASCII correct comme dans Filius
     const asciiLogo = [
@@ -98,17 +98,6 @@ function CommandLineApp({ device }) {
         return getNetworkAddress(ip1, mask) === getNetworkAddress(ip2, mask);
     };
 
-    const findDeviceByIP = (ip) => {
-        let target = devices.find(d => d.ip === ip);
-        if (target) return target;
-
-        for (const dev of devices) {
-            if (dev.interfaces?.some(i => i.ip === ip)) {
-                return dev;
-            }
-        }
-        return null;
-    };
 
     const findPhysicalPath = (fromId, toId, visited = new Set()) => {
         if (fromId === toId) return [fromId];
@@ -675,7 +664,7 @@ function CommandLineApp({ device }) {
 
     const executeNslookup = (hostname) => {
         // Chercher le serveur DNS - peut être local ou via NAT
-        let dnsServer = devices.find(d => d.ip === device.dns);
+        let dnsServer = findDeviceByIP(device.dns);
         let dnsViaModem = null;
         
         // Chercher aussi par IP publique (modem)

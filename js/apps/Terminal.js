@@ -4,7 +4,7 @@
    ============================================ */
 
 function TerminalApp({ device }) {
-    const { ping, traceroute, httpRequest, requestDHCP, addLog, devices } = useNetwork();
+    const { ping, traceroute, httpRequest, requestDHCP, addLog, devices, connections } = useNetwork();
 
     const [history, setHistory] = React.useState([
         { type: 'system', text: `Filius Terminal - ${device.name}` },
@@ -162,7 +162,10 @@ function TerminalApp({ device }) {
                     if (!args[0]) {
                         addOutput([{ type: 'error', text: 'Usage: nslookup <hostname>' }]);
                     } else {
-                        const dnsServer = devices.find(d => d.ip === device.dns);
+                        const dnsMatches = devices.filter(d => d.ip === device.dns);
+                        const dnsServer = dnsMatches.length > 1
+                            ? (dnsMatches.find(d => connections.some(c => c.from === d.id || c.to === d.id)) || dnsMatches[0])
+                            : dnsMatches[0] || null;
                         addOutput([
                             { type: 'output', text: `Serveur:  ${dnsServer?.name || 'inconnu'}` },
                             { type: 'output', text: `Address:  ${device.dns || 'non configuré'}` },
@@ -257,7 +260,7 @@ function TerminalApp({ device }) {
         }
 
         setIsProcessing(false);
-    }, [device, ping, traceroute, httpRequest, requestDHCP, addOutput, devices]);
+    }, [device, ping, traceroute, httpRequest, requestDHCP, addOutput, devices, connections]);
 
     // Gestion du clavier
     const handleKeyDown = (e) => {
