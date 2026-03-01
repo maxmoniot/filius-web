@@ -294,10 +294,19 @@ function FiliusWeb() {
 
     // ========== GESTION DES APPAREILS ==========
     const addDevice = React.useCallback((type) => {
-        const newDevice = createDevice(type, devices);
+        // Calculer le centre de la zone visible du canvas
+        let centerX = 2500, centerY = 2000;
+        if (canvasRef.current) {
+            const rect = canvasRef.current.getBoundingClientRect();
+            centerX = (rect.width / 2 - canvasOffset.x) / canvasScale;
+            centerY = (rect.height / 2 - canvasOffset.y) / canvasScale;
+        }
+        const x = centerX - 50 + Math.random() * 100;
+        const y = centerY - 50 + Math.random() * 100;
+        const newDevice = createDevice(type, devices, x, y);
         setDevices(prev => [...prev, newDevice]);
         addLog(`Ajout: ${newDevice.name}`, 'success');
-    }, [devices, addLog]);
+    }, [devices, addLog, canvasOffset, canvasScale]);
 
     const addDeviceAtPosition = React.useCallback((type, x, y) => {
         const newDevice = createDevice(type, devices, x, y);

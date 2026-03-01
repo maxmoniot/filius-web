@@ -183,7 +183,7 @@ function Header({ projectName, setProjectName, networkSpeed, setNetworkSpeed, on
                                 color: 'var(--text-dim)',
                                 margin: 0
                             }}>
-                                Merci à <strong>DIVA informatique</strong> pour ses précieux conseils
+                                Merci à <strong>DIVA informatique</strong> pour ses précieux conseils et à <strong>Gaëtan</strong> pour tous les tests
                             </p>
                         </div>
                         <p className="support-thanks">Merci ! 🙏</p>
