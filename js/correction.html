@@ -248,7 +248,14 @@ function analyzeSubnetConsensus(analyzer, subnet) {
 //  REFERENCE BLUEPRINT v5
 // ================================================================
 function buildReferenceBlueprint(project) {
-    const ref = new TopologyAnalyzer(project);
+    // Exclure les appareils orphelins (non connectés) de la référence aussi
+    const connIds = new Set();
+    (project.connections||[]).forEach(c => { connIds.add(c.from); connIds.add(c.to); });
+    const filteredProject = {
+        ...project,
+        devices: (project.devices||[]).filter(d => connIds.has(d.id)),
+    };
+    const ref = new TopologyAnalyzer(filteredProject);
     const counts = ref.countDevices();
     const subnets = ref.identifySubnets();
     const endpointNetworks = ref.getEndpointNetworks();
