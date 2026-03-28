@@ -729,14 +729,14 @@ const Canvas = React.forwardRef(function Canvas({
                 {/* SVG pour les connexions et paquets */}
                 <svg className="canvas-svg" style={{ position: 'absolute', top: 0, left: 0, width: '5000px', height: '5000px', overflow: 'visible' }}>
                     <defs>
-                        <filter id="glow">
+                        <filter id="glow" filterUnits="userSpaceOnUse" x="-50" y="-50" width="5100" height="5100">
                             <feGaussianBlur stdDeviation="3" result="coloredBlur" />
                             <feMerge>
                                 <feMergeNode in="coloredBlur" />
                                 <feMergeNode in="SourceGraphic" />
                             </feMerge>
                         </filter>
-                        <filter id="glowGreen">
+                        <filter id="glowGreen" filterUnits="userSpaceOnUse" x="-50" y="-50" width="5100" height="5100">
                             <feGaussianBlur stdDeviation="4" result="coloredBlur" />
                             <feMerge>
                                 <feMergeNode in="coloredBlur" />
