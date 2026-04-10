@@ -1,0 +1,1192 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Filius Web - Correction automatique</title>
+    <link rel="icon" type="image/svg+xml" href="favicon.svg">
+    <script src="lib/react.min.js"></script>
+    <script src="lib/react-dom.min.js"></script>
+    <script src="lib/babel.min.js"></script>
+    <style>
+        :root {
+            --bg-dark: #0f1419;
+            --bg-panel: #1a1f26;
+            --bg-card: #242b35;
+            --bg-input: #2d353f;
+            --border: #3d4752;
+            --border-light: #4d5762;
+            --text: #e6edf3;
+            --text-dim: #8b949e;
+            --text-muted: #6e7681;
+            --accent-blue: #58a6ff;
+            --accent-green: #3fb950;
+            --accent-yellow: #d29922;
+            --accent-orange: #db6d28;
+            --accent-red: #f85149;
+            --accent-purple: #a371f7;
+            --accent-cyan: #39c5cf;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg-dark); color: var(--text); min-height: 100vh; }
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-track { background: var(--bg-dark); }
+        ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+    </style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+
+/* ============================================
+   FILIUS WEB - CORRECTION AUTOMATIQUE v5
+   ============================================
+   Système de CONSENSUS par sous-réseau :
+   - Majorité détermine la "bonne" config
+   - Pénalise la minorité (coût minimal)
+   - Détecte conflits d'IP
+   - Passerelles & routeur analysés ENSEMBLE
+   ============================================ */
+
+// ========== IP UTILITIES ==========
+function ipToInt(ip) { if(!ip) return 0; const p=ip.split('.').map(Number); return ((p[0]<<24)>>>0)+((p[1]<<16)>>>0)+((p[2]<<8)>>>0)+p[3]; }
+function intToIp(n) { return [(n>>>24)&255,(n>>>16)&255,(n>>>8)&255,n&255].join('.'); }
+function isValidIP(ip) { if(!ip||typeof ip!=='string') return false; const p=ip.split('.'); return p.length===4&&p.every(x=>{const n=parseInt(x);return !isNaN(n)&&n>=0&&n<=255&&String(n)===x.trim();}); }
+function isValidMask(mask) { if(!isValidIP(mask)) return false; const n=ipToInt(mask); if(n===0) return false; const inv=(~n)>>>0; return (inv&(inv+1))===0; }
+function getNetworkAddress(ip,mask) { if(!ip||!mask) return null; return intToIp((ipToInt(ip)&ipToInt(mask))>>>0); }
+function isSameNetwork(ip1,ip2,mask) { if(!ip1||!ip2||!mask) return false; return getNetworkAddress(ip1,mask)===getNetworkAddress(ip2,mask); }
+
+// ========== TOPOLOGY ANALYZER ==========
+class TopologyAnalyzer {
+    constructor(project) {
+        this.devices = (project.devices||[]).map(d => ({ ...d, type: (d.type||'').toUpperCase() }));
+        this.connections = project.connections || [];
+        this._adj = {};
+        for (const d of this.devices) this._adj[d.id] = [];
+        for (const c of this.connections) {
+            if (this._adj[c.from]) this._adj[c.from].push(c.to);
+            if (this._adj[c.to]) this._adj[c.to].push(c.from);
+        }
+    }
+    getDevice(id) { return this.devices.find(d => d.id === id); }
+    countDevices() { const c={}; this.devices.forEach(d=>{c[d.type]=(c[d.type]||0)+1;}); return c; }
+    isConnected(id) { return (this._adj[id]||[]).length > 0; }
+
+    getLocalGroup(startId) {
+        const visited = new Set();
+        const group = { endpoints: [], switches: [], routerIds: [], modemIds: [] };
+        const queue = [startId];
+        while (queue.length > 0) {
+            const cid = queue.shift();
+            if (visited.has(cid)) continue;
+            visited.add(cid);
+            const dev = this.getDevice(cid);
+            if (!dev) continue;
+            if (dev.type === 'ROUTER') { group.routerIds.push(dev.id); continue; }
+            if (dev.type === 'SWITCH') group.switches.push(dev);
+            else if (dev.type === 'MODEM') { group.modemIds.push(dev.id); group.endpoints.push(dev); }
+            else group.endpoints.push(dev);
+            for (const n of (this._adj[cid]||[])) { if (!visited.has(n)) queue.push(n); }
+        }
+        return group;
+    }
+
+    identifySubnets() {
+        const visited = new Set();
+        const subnets = [];
+        for (const ep of this.devices.filter(d => d.type !== 'ROUTER' && d.type !== 'SWITCH')) {
+            if (visited.has(ep.id)) continue;
+            const group = this.getLocalGroup(ep.id);
+            for (const d of [...group.endpoints, ...group.switches]) visited.add(d.id);
+            if (group.endpoints.length > 0) subnets.push(group);
+        }
+        return subnets;
+    }
+
+    findDirectModem(deviceId) {
+        const group = this.getLocalGroup(deviceId);
+        return group.modemIds.length > 0 ? this.getDevice(group.modemIds[0]) : null;
+    }
+
+    getEndpointNetworks() {
+        const nets = new Set();
+        for (const d of this.devices) {
+            if (['PC','LAPTOP','SERVER'].includes(d.type) && d.ip && d.mask)
+                nets.add(getNetworkAddress(d.ip, d.mask) + '/' + d.mask);
+        }
+        return nets;
+    }
+
+    // Find all router interfaces on a given network
+    getRouterInterfacesOnNetwork(network, mask) {
+        const results = [];
+        for (const d of this.devices) {
+            if (d.type !== 'ROUTER') continue;
+            for (const iface of (d.interfaces || [])) {
+                if (!iface.ip) continue;
+                const ifMask = iface.mask || '255.255.255.0';
+                if (getNetworkAddress(iface.ip, ifMask) === network && ifMask === mask) {
+                    results.push({ router: d, iface });
+                }
+            }
+        }
+        return results;
+    }
+}
+
+// ================================================================
+//  CONSENSUS ANALYSIS
+//  Pour chaque sous-réseau connecté à un routeur, on détermine
+//  la "bonne passerelle" par vote majoritaire
+// ================================================================
+
+function analyzeSubnetConsensus(analyzer, subnet) {
+    const eps = subnet.endpoints.filter(d => ['PC','LAPTOP','SERVER'].includes(d.type));
+    const hasRouter = subnet.routerIds.length > 0;
+    const hasModemDirect = subnet.modemIds.length > 0 && subnet.routerIds.length === 0;
+
+    // Step 1: Determine the dominant network in this subnet
+    const ips = eps.filter(d => d.ip && d.mask).map(d => ({
+        ip: d.ip, mask: d.mask,
+        net: getNetworkAddress(d.ip, d.mask)
+    }));
+    const freq = {};
+    ips.forEach(i => { const k = i.net+'/'+i.mask; freq[k]=(freq[k]||0)+1; });
+    let bestNet = null, bestCount = 0;
+    for (const [k,c] of Object.entries(freq)) { if (c > bestCount) { bestCount=c; bestNet=k; } }
+    let network = null, mask = null;
+    if (bestNet) { [network, mask] = bestNet.split('/'); }
+
+    // Step 2: Find router interface(s) on this network
+    let routerIfaces = [];
+    if (hasRouter && network && mask) {
+        routerIfaces = analyzer.getRouterInterfacesOnNetwork(network, mask);
+    }
+
+    // Step 2b: Find ALL interfaces of physically connected routers
+    // (to detect network mismatches where router is on wrong network)
+    let allRouterIfaces = [];
+    if (hasRouter) {
+        for (const rid of subnet.routerIds) {
+            const router = analyzer.getDevice(rid);
+            if (!router) continue;
+            for (const iface of (router.interfaces || [])) {
+                if (!iface.ip) continue;
+                allRouterIfaces.push({ router, iface });
+            }
+        }
+    }
+
+    // Step 3: Consensus gateway vote
+    // Each PC's gateway = 1 vote, router interface IP = 1 vote
+    const gwVotes = {};
+    for (const ep of eps) {
+        if (ep.gateway && ep.gateway.trim()) {
+            const gw = ep.gateway.trim();
+            gwVotes[gw] = (gwVotes[gw]||0) + 1;
+        }
+    }
+    for (const ri of routerIfaces) {
+        gwVotes[ri.iface.ip] = (gwVotes[ri.iface.ip]||0) + 1;
+    }
+
+    // Find consensus (most votes)
+    let consensusGw = null, consensusVotes = 0;
+    for (const [gw, votes] of Object.entries(gwVotes)) {
+        if (votes > consensusVotes) { consensusVotes = votes; consensusGw = gw; }
+    }
+
+    // Step 3b: Network mismatch detection
+    // If the consensus gateway exists but is NOT on the subnet's network,
+    // there's a mismatch (e.g. PCs on 192.168.50.x, gateway 192.168.0.245)
+    let networkMismatch = false;
+    let mismatchRouterIface = null; // the router interface that should serve this subnet but is on wrong network
+    if (consensusGw && network && mask && isValidIP(consensusGw)) {
+        const gwNet = getNetworkAddress(consensusGw, mask);
+        if (gwNet !== network) {
+            networkMismatch = true;
+            // Find which router interface has this IP
+            mismatchRouterIface = allRouterIfaces.find(ri => ri.iface.ip === consensusGw);
+        }
+    }
+
+    // Step 4: IP conflict detection within subnet
+    const ipUsers = {}; // ip → [device names]
+    for (const ep of eps) {
+        if (ep.ip) {
+            if (!ipUsers[ep.ip]) ipUsers[ep.ip] = [];
+            ipUsers[ep.ip].push({ name: ep.name, type: 'endpoint' });
+        }
+    }
+    for (const ri of routerIfaces) {
+        if (ri.iface.ip) {
+            if (!ipUsers[ri.iface.ip]) ipUsers[ri.iface.ip] = [];
+            ipUsers[ri.iface.ip].push({ name: ri.router.name + ' (interface)', type: 'router' });
+        }
+    }
+    const conflicts = [];
+    for (const [ip, users] of Object.entries(ipUsers)) {
+        if (users.length > 1) conflicts.push({ ip, users });
+    }
+
+    return {
+        endpoints: eps,
+        network, mask,
+        hasRouter, hasModemDirect,
+        routerIfaces,
+        allRouterIfaces,
+        consensusGw,
+        consensusVotes,
+        gwVotes,
+        conflicts,
+        networkMismatch,
+        mismatchRouterIface,
+    };
+}
+
+// ================================================================
+//  REFERENCE BLUEPRINT v5
+// ================================================================
+function buildReferenceBlueprint(project) {
+    // Exclure les appareils orphelins (non connectés) de la référence aussi
+    const connIds = new Set();
+    (project.connections||[]).forEach(c => { connIds.add(c.from); connIds.add(c.to); });
+    const filteredProject = {
+        ...project,
+        devices: (project.devices||[]).filter(d => connIds.has(d.id)),
+    };
+    const ref = new TopologyAnalyzer(filteredProject);
+    const counts = ref.countDevices();
+    const subnets = ref.identifySubnets();
+    const endpointNetworks = ref.getEndpointNetworks();
+
+    const bp = {
+        deviceCounts: counts,
+        subnetCount: subnets.length,
+        totalEndpoints: 0,
+        hasRouter: (counts.ROUTER||0) > 0,
+        hasModem: (counts.MODEM||0) > 0,
+        routerExpectedRealInterfaces: 0,
+        webServerExpected: false,
+        webContentExpected: false,
+        dnsExpected: false,
+        dnsRecordsExpected: false,
+        modemExpectations: [],
+        validDNSTargets: [],
+        subnetSummary: [],
+        gatewaysExpected: false,
+    };
+
+    const allEP = ref.devices.filter(d => ['PC','LAPTOP','SERVER'].includes(d.type));
+    bp.totalEndpoints = allEP.length;
+
+    // Router real interfaces (on endpoint networks, not modem links)
+    for (const r of ref.devices.filter(d => d.type === 'ROUTER')) {
+        for (const iface of (r.interfaces||[])) {
+            if (!iface.ip) continue;
+            const m = iface.mask || '255.255.255.0';
+            if (endpointNetworks.has(getNetworkAddress(iface.ip,m)+'/'+m))
+                bp.routerExpectedRealInterfaces++;
+        }
+    }
+
+    // Gateway needed?
+    for (const sub of subnets) {
+        if (sub.routerIds.length > 0) {
+            const eps = sub.endpoints.filter(d => ['PC','LAPTOP','SERVER'].includes(d.type));
+            if (eps.some(d => d.gateway && d.gateway.trim())) bp.gatewaysExpected = true;
+        }
+    }
+
+    // Web server
+    const ws = ref.devices.filter(d => d.services?.webserver?.running);
+    bp.webServerExpected = ws.length > 0;
+    bp.webContentExpected = ws.some(s => !!s.filesystem?.['/var/www/index.html']?.content);
+
+    // DNS
+    const dns = ref.devices.filter(d => d.services?.dnsserver?.running);
+    bp.dnsExpected = dns.length > 0;
+    bp.dnsRecordsExpected = dns.some(s => (s.services.dnsserver.records||[]).length > 0);
+    for (const d of dns) {
+        if (d.ip) bp.validDNSTargets.push(d.ip);
+        const modem = ref.findDirectModem(d.id);
+        if (modem?.publicIP) bp.validDNSTargets.push(modem.publicIP);
+    }
+
+    // Per-modem expectations
+    for (const modem of ref.devices.filter(d => d.type === 'MODEM')) {
+        const group = ref.getLocalGroup(modem.id);
+        const servers = group.endpoints.filter(d => d.type === 'SERVER');
+        const hasWeb = servers.some(s => s.services?.webserver?.running);
+        const hasDNS = servers.some(s => s.services?.dnsserver?.running);
+        bp.modemExpectations.push({
+            name: modem.name, publicIP: modem.publicIP, hasWebServer: hasWeb, hasDNSServer: hasDNS,
+            expectTcp: hasWeb && (modem.natConfig?.tcp?.enabled||false),
+            expectUdp: hasDNS && (modem.natConfig?.udp?.enabled||false),
+            expectIcmp: modem.natConfig?.icmp?.enabled||false,
+        });
+    }
+
+    // Subnet summary
+    for (const sub of subnets) {
+        const eps = sub.endpoints.filter(d => d.type !== 'MODEM');
+        bp.subnetSummary.push({
+            size: eps.length, types: eps.map(d=>d.type),
+            hasRouter: sub.routerIds.length > 0, hasModem: sub.modemIds.length > 0,
+        });
+    }
+
+    // Reference data for "identique à la référence" options
+    bp.refDeviceNames = ref.devices.filter(d => ['PC','LAPTOP','SERVER','ROUTER','MODEM'].includes(d.type)).map(d => d.name);
+    bp.refEndpoints = allEP.map(d => ({ name: d.name, type: d.type, ip: d.ip, mask: d.mask, gateway: d.gateway || '' }));
+    bp.refRouterIfaces = [];
+    for (const r of ref.devices.filter(d => d.type === 'ROUTER')) {
+        for (const iface of (r.interfaces||[])) {
+            if (!iface.ip) continue;
+            const m = iface.mask || '255.255.255.0';
+            if (endpointNetworks.has(getNetworkAddress(iface.ip,m)+'/'+m))
+                bp.refRouterIfaces.push({ ip: iface.ip, mask: m });
+        }
+    }
+
+    return bp;
+}
+
+// ================================================================
+//  GRADING ENGINE v5
+// ================================================================
+function gradeProject(project, criteria, blueprint) {
+    // Exclure les appareils orphelins (non connectés) de la correction
+    const connIds = new Set();
+    (project.connections||[]).forEach(c => { connIds.add(c.from); connIds.add(c.to); });
+    const filteredProject = {
+        ...project,
+        devices: (project.devices||[]).filter(d => connIds.has(d.id)),
+    };
+    const stu = new TopologyAnalyzer(filteredProject);
+    const res = { total: 0, maxTotal: 0, details: [] };
+    const subnets = stu.identifySubnets();
+    const endpointNetworks = stu.getEndpointNetworks();
+
+    // Pre-compute consensus for all subnets
+    const subnetAnalyses = subnets.map(s => analyzeSubnetConsensus(stu, s));
+
+    // ─── 1. STRUCTURE & CÂBLAGE ───
+    if (criteria.structure?.enabled) {
+        const pts = criteria.structure.points;
+        const checks = []; let earned=0, total=0;
+
+        // Merge PC+LAPTOP counts (interchangeable) and filter to known types only
+        const knownTypes = ['PC','LAPTOP','SERVER','SWITCH','ROUTER','MODEM'];
+        const rawCounts = blueprint.deviceCounts;
+        const refCounts = {};
+        for (const t of knownTypes) { if (rawCounts[t] > 0) refCounts[t] = rawCounts[t]; }
+        const pcLaptopRef = (refCounts.PC||0) + (refCounts.LAPTOP||0);
+        delete refCounts.PC; delete refCounts.LAPTOP;
+        if (pcLaptopRef > 0) refCounts['PC/Portable'] = pcLaptopRef;
+
+        const stuCounts = stu.countDevices();
+        const pcLaptopStu = (stuCounts.PC||0) + (stuCounts.LAPTOP||0);
+
+        for (const [type, min] of Object.entries(refCounts)) {
+            if (min<=0) continue;
+            if (type==='SWITCH' && !criteria.structure.checkSwitchCount) continue;
+            total++;
+            const actual = type === 'PC/Portable' ? pcLaptopStu : (stuCounts[type]||0);
+            const ok = actual>=min; if(ok) earned++;
+            checks.push({ label: `${type}: ${actual}/${min}`, ok });
+        }
+        const relevant = stu.devices.filter(d => ['PC','LAPTOP','SERVER','SWITCH','ROUTER','MODEM'].includes(d.type));
+        const connected = relevant.filter(d => stu.isConnected(d.id)).length;
+        total++; if(connected===relevant.length) earned++;
+        checks.push({ label: `Câblage: ${connected}/${relevant.length}`, ok: connected===relevant.length });
+        if (blueprint.subnetCount > 0) {
+            total++; const ok = subnets.length >= blueprint.subnetCount; if(ok) earned++;
+            checks.push({ label: `Sous-réseaux: ${subnets.length}/${blueprint.subnetCount}`, ok });
+        }
+
+        // Option: appellation identique à la référence
+        if (criteria.structure.checkNames && blueprint.refDeviceNames) {
+            const refNames = new Set(blueprint.refDeviceNames);
+            const stuNames = stu.devices.filter(d => ['PC','LAPTOP','SERVER','ROUTER','MODEM'].includes(d.type)).map(d => d.name);
+            for (const rn of refNames) {
+                total++;
+                const found = stuNames.includes(rn);
+                if (found) earned++;
+                checks.push({ label: `Nom "${rn}"`, ok: found, detail: found ? '' : 'Absent' });
+            }
+        }
+
+        // Option: noms différents (tous uniques)
+        if (criteria.structure.checkUniqueNames) {
+            const nameMap = {};
+            stu.devices.filter(d => ['PC','LAPTOP','SERVER','ROUTER','MODEM'].includes(d.type)).forEach(d => {
+                nameMap[d.name] = (nameMap[d.name]||0) + 1;
+            });
+            const dupes = Object.entries(nameMap).filter(([n,c]) => c > 1);
+            total++;
+            if (dupes.length === 0) earned++;
+            checks.push({ label: `Noms uniques`, ok: dupes.length === 0,
+                detail: dupes.length > 0 ? `Doublons: ${dupes.map(([n,c])=>`"${n}"×${c}`).join(', ')}` : '' });
+        }
+
+        const score = total>0?(earned/total)*pts:pts;
+        res.details.push({ category: '🏗️ Structure & Câblage', score: Math.round(score*10)/10, max: pts, checks });
+    }
+
+    // ─── 2. ADRESSAGE + PASSERELLES + ROUTEUR (UNIFIED by consensus) ───
+    // These three are analyzed TOGETHER per subnet to avoid cascading penalties
+
+    let addressChecks = [], addressEarned = 0, addressTotal = 0;
+    let gatewayChecks = [], gatewayEarned = 0, gatewayTotal = 0;
+    let routerChecks = [], routerEarned = 0, routerTotal = 0;
+
+    for (let si = 0; si < subnetAnalyses.length; si++) {
+        const sa = subnetAnalyses[si];
+        const eps = sa.endpoints;
+
+        // --- IP conflicts ---
+        for (const conflict of sa.conflicts) {
+            const names = conflict.users.map(u => u.name).join(', ');
+            // Penalize the one that's NOT the consensus
+            // If router has the same IP as a PC, and consensus says PCs are right → router wrong
+            // If router has the same IP as a PC, and consensus says router is right → PC wrong
+            const routerInConflict = conflict.users.some(u => u.type === 'router');
+            if (routerInConflict) {
+                const pcInConflict = conflict.users.find(u => u.type === 'endpoint');
+                // Who owns this IP legitimately? The consensus decides
+                if (sa.consensusGw === conflict.ip) {
+                    // The IP belongs to the router (it's the expected gateway)
+                    // → the PC with this IP is wrong
+                    if (pcInConflict) {
+                        addressChecks.push({ label: `⚠️ ${pcInConflict.name}: IP ${conflict.ip} en conflit avec routeur`, ok: false,
+                            detail: 'IP identique au routeur (passerelle)' });
+                        addressTotal++; // count but don't earn
+                    }
+                } else {
+                    // The router interface is on a wrong IP that happens to conflict with a PC
+                    // → penalize the router, not the PC
+                    routerChecks.push({ label: `⚠️ Conflit IP ${conflict.ip}: ${names}`, ok: false,
+                        detail: 'Interface routeur en conflit avec un poste' });
+                    routerTotal++; // count but don't earn
+                }
+            } else {
+                // PC-PC conflict → N-1 are wrong (first one keeps it, others are duplicates)
+                const dupes = conflict.users.length - 1; // number of extra duplicates
+                for (let di = 1; di < conflict.users.length; di++) {
+                    addressChecks.push({ label: `⚠️ ${conflict.users[di].name}: IP ${conflict.ip} en double`, ok: false,
+                        detail: `${conflict.users.length} appareils avec la même IP` });
+                    addressTotal++;
+                }
+            }
+        }
+
+        // --- Addressing per endpoint ---
+        for (const ep of eps) {
+            // IP valid
+            addressTotal++;
+            const hasIP = isValidIP(ep.ip);
+            if (hasIP) addressEarned++;
+            addressChecks.push({ label: `${ep.name}: IP ${ep.ip||'∅'}`, ok: hasIP });
+
+            // Mask valid (only if option enabled)
+            if (criteria.addressing?.checkMasks) {
+                addressTotal++;
+                const hasMask = isValidMask(ep.mask);
+                if (hasMask) addressEarned++;
+                addressChecks.push({ label: `${ep.name}: Masque ${ep.mask||'∅'}`, ok: hasMask });
+            }
+        }
+
+        // --- Gateways by consensus (1 check per endpoint) ---
+        if (sa.hasRouter && !sa.hasModemDirect) {
+            for (const ep of eps) {
+                gatewayTotal++;
+                const hasGw = ep.gateway && ep.gateway.trim() !== '';
+                if (!hasGw) {
+                    gatewayChecks.push({ label: `${ep.name}: Passerelle ∅`, ok: false });
+                    continue;
+                }
+                const gw = ep.gateway.trim();
+                // Gateway must match consensus AND be on same network
+                const matchConsensus = gw === sa.consensusGw;
+                const onNetwork = isValidIP(ep.ip) && isValidMask(ep.mask) && isValidIP(gw) && isSameNetwork(ep.ip, gw, ep.mask);
+                const ok = matchConsensus && onNetwork;
+                if (ok) gatewayEarned++;
+
+                let detail = '';
+                if (!matchConsensus) detail = `Attendu: ${sa.consensusGw}`;
+                else if (!onNetwork) detail = `${gw} hors réseau ${getNetworkAddress(ep.ip, ep.mask)}`;
+                gatewayChecks.push({ label: `${ep.name}: Passerelle ${gw}`, ok, detail });
+            }
+        }
+        // Endpoints behind modem-only → no gateway check (no penalty)
+
+        // --- Router interfaces for this subnet ---
+        if (sa.routerIfaces.length > 0) {
+            for (const ri of sa.routerIfaces) {
+                // Check: interface IP matches consensus?
+                routerTotal++;
+                const matchConsensus = ri.iface.ip === sa.consensusGw;
+                if (matchConsensus) routerEarned++;
+                routerChecks.push({ label: `${ri.router.name}: ${ri.iface.ip} sur ${sa.network||'?'}`, ok: matchConsensus,
+                    detail: matchConsensus ? 'Correspond au consensus' : `Consensus: ${sa.consensusGw}` });
+            }
+        }
+
+        // --- Network mismatch: router physically connected but interface on wrong network ---
+        if (sa.networkMismatch && sa.mismatchRouterIface) {
+            const ri = sa.mismatchRouterIface;
+            const riMask = ri.iface.mask || '255.255.255.0';
+            const riNet = getNetworkAddress(ri.iface.ip, riMask);
+            routerTotal++;
+            routerChecks.push({ label: `${ri.router.name}: ${ri.iface.ip} ≠ réseau ${sa.network}`, ok: false,
+                detail: `Interface sur ${riNet}, postes sur ${sa.network}` });
+        } else if (sa.hasRouter && sa.routerIfaces.length === 0 && !sa.hasModemDirect && sa.network) {
+            // Router is physically connected but has NO interface matching this subnet
+            // Look for the closest candidate interface
+            const candidates = sa.allRouterIfaces.filter(ri => {
+                const m = ri.iface.mask || '255.255.255.0';
+                const riNet = getNetworkAddress(ri.iface.ip, m);
+                // Exclude auto/modem interfaces and interfaces already matched to other subnets
+                return riNet !== sa.network;
+            });
+            if (candidates.length > 0) {
+                // There are router interfaces but none match this subnet → mismatch
+                routerTotal++;
+                routerChecks.push({ label: `Routeur: aucune interface sur ${sa.network}`, ok: false,
+                    detail: `Interfaces: ${candidates.map(c => c.iface.ip).join(', ')}` });
+            }
+        }
+    }
+
+    // --- Exact reference checks (after all subnet analysis) ---
+
+    // Addressing: IP identiques à la référence
+    if (criteria.addressing?.checkExactIPs && blueprint.refEndpoints) {
+        const refIPs = new Set(blueprint.refEndpoints.map(e => e.ip).filter(Boolean));
+        const stuEPs = stu.devices.filter(d => ['PC','LAPTOP','SERVER'].includes(d.type));
+        for (const ep of stuEPs) {
+            if (!ep.ip) continue;
+            addressTotal++;
+            const ok = refIPs.has(ep.ip);
+            if (ok) addressEarned++;
+            addressChecks.push({ label: `${ep.name}: IP ${ep.ip} ${ok?'=':'≠'} référence`, ok,
+                detail: ok ? '' : 'IP absente de la référence' });
+        }
+    }
+
+    // Gateways: identiques à la référence
+    if (criteria.gateways?.checkExactGateways && blueprint.refEndpoints) {
+        const refGWs = {};
+        blueprint.refEndpoints.forEach(e => { if (e.gateway) refGWs[e.name] = e.gateway; });
+        const stuEPs = stu.devices.filter(d => ['PC','LAPTOP','SERVER'].includes(d.type));
+        for (const ep of stuEPs) {
+            const gw = (ep.gateway||'').trim();
+            if (!gw) continue;
+            // Try match by name first, then by any ref gateway value
+            const refGw = refGWs[ep.name];
+            if (refGw) {
+                gatewayTotal++;
+                const ok = gw === refGw;
+                if (ok) gatewayEarned++;
+                gatewayChecks.push({ label: `${ep.name}: GW ${gw} ${ok?'=':'≠'} réf (${refGw})`, ok });
+            }
+        }
+    }
+
+    // Router: adressage identique à la référence
+    if (criteria.router?.checkExactRouterIPs && blueprint.refRouterIfaces) {
+        const refSet = new Set(blueprint.refRouterIfaces.map(r => r.ip));
+        const stuRouters = stu.devices.filter(d => d.type === 'ROUTER');
+        for (const router of stuRouters) {
+            const realIfaces = (router.interfaces||[]).filter(iface => {
+                if (!iface.ip) return false;
+                const m = iface.mask||'255.255.255.0';
+                return endpointNetworks.has(getNetworkAddress(iface.ip,m)+'/'+m);
+            });
+            for (const iface of realIfaces) {
+                routerTotal++;
+                const ok = refSet.has(iface.ip);
+                if (ok) routerEarned++;
+                routerChecks.push({ label: `${router.name}: ${iface.ip} ${ok?'=':'≠'} référence`, ok,
+                    detail: ok ? '' : 'IP absente de la référence' });
+            }
+        }
+    }
+
+    // Also check router: real interfaces vs auto
+    const routers = stu.devices.filter(d => d.type === 'ROUTER');
+    for (const router of routers) {
+        const allIfaces = (router.interfaces||[]).filter(i => i.ip);
+        const realIfaces = allIfaces.filter(iface => {
+            const m = iface.mask||'255.255.255.0';
+            return endpointNetworks.has(getNetworkAddress(iface.ip,m)+'/'+m);
+        });
+
+        // Check number of real interfaces
+        routerTotal++;
+        const expected = blueprint.routerExpectedRealInterfaces;
+        const ok = realIfaces.length >= Math.min(expected, 2);
+        if (ok) routerEarned++;
+        routerChecks.push({ label: `${router.name}: ${realIfaces.length} interface(s) réseau`, ok,
+            detail: `${expected} attendue(s), ${allIfaces.length - realIfaces.length} auto/modem ignorée(s)` });
+
+        // Check distinct networks
+        if (realIfaces.length >= 2) {
+            routerTotal++;
+            const nets = new Set();
+            let allDiff = true;
+            for (const iface of realIfaces) {
+                const net = getNetworkAddress(iface.ip, iface.mask||'255.255.255.0');
+                if (nets.has(net)) { allDiff=false; break; }
+                nets.add(net);
+            }
+            if (allDiff) routerEarned++;
+            routerChecks.push({ label: `${router.name}: Réseaux distincts`, ok: allDiff });
+        }
+    }
+
+    // Push addressing results
+    if (criteria.addressing?.enabled) {
+        const pts = criteria.addressing.points;
+        const score = addressTotal > 0 ? (addressEarned / addressTotal) * pts : 0;
+        res.details.push({ category: '🖥️ Adressage postes', score: Math.round(score*10)/10, max: pts, checks: addressChecks });
+    }
+
+    // Push gateway results
+    if (criteria.gateways?.enabled) {
+        const pts = criteria.gateways.points;
+        if (gatewayTotal === 0) {
+            res.details.push({ category: '🔗 Passerelles', score: pts, max: pts,
+                checks: [{ label: 'Aucune passerelle nécessaire', ok: true }] });
+        } else {
+            const score = (gatewayEarned / gatewayTotal) * pts;
+            res.details.push({ category: '🔗 Passerelles', score: Math.round(score*10)/10, max: pts, checks: gatewayChecks });
+        }
+    }
+
+    // Push router results
+    if (criteria.router?.enabled) {
+        const pts = criteria.router.points;
+        if (routerTotal === 0 && !blueprint.hasRouter) {
+            res.details.push({ category: '🔀 Routeur', score: pts, max: pts,
+                checks: [{ label: 'Pas de routeur attendu', ok: true }] });
+        } else {
+            const score = routerTotal > 0 ? (routerEarned / routerTotal) * pts : 0;
+            res.details.push({ category: '🔀 Routeur', score: Math.round(score*10)/10, max: pts, checks: routerChecks });
+        }
+    }
+
+    // ─── 5. MODEM & NAT ───
+    if (criteria.modem?.enabled) {
+        const pts = criteria.modem.points;
+        const checks = []; let earned=0, total=0;
+        const stuModems = stu.devices.filter(d => d.type === 'MODEM');
+
+        if (stuModems.length === 0 && blueprint.hasModem) {
+            checks.push({ label: 'Modem manquant', ok: false }); total++;
+        } else {
+            for (const modem of stuModems) {
+                total++;
+                const hasPub = modem.publicIP && modem.publicIP.trim();
+                if (hasPub) earned++;
+                checks.push({ label: `${modem.name}: IP publique ${hasPub ? modem.publicIP : '∅'}`, ok: !!hasPub });
+
+                const group = stu.getLocalGroup(modem.id);
+                const servers = group.endpoints.filter(d => d.type === 'SERVER');
+                const hasWeb = servers.some(s => s.services?.webserver?.running);
+                const hasDNS = servers.some(s => s.services?.dnsserver?.running);
+
+                // Match reference modem by role
+                const refExpect = blueprint.modemExpectations.find(rm =>
+                    rm.hasWebServer === hasWeb && rm.hasDNSServer === hasDNS
+                ) || blueprint.modemExpectations.find(rm =>
+                    (hasWeb && rm.hasWebServer) || (hasDNS && rm.hasDNSServer)
+                );
+
+                if (hasWeb && (refExpect?.expectTcp || blueprint.modemExpectations.some(m => m.expectTcp && m.hasWebServer))) {
+                    total++;
+                    const ok = modem.natConfig?.tcp?.enabled;
+                    if (ok) earned++;
+                    checks.push({ label: `${modem.name}: NAT TCP (web)`, ok: !!ok });
+                    if (ok && modem.natConfig?.tcp?.targetIP) {
+                        total++;
+                        const tgt = servers.find(s => s.ip === modem.natConfig.tcp.targetIP && s.services?.webserver?.running);
+                        if (tgt) earned++;
+                        checks.push({ label: `${modem.name}: TCP → ${modem.natConfig.tcp.targetIP}`, ok: !!tgt,
+                            detail: tgt ? tgt.name : 'Cible incorrecte' });
+                    }
+                }
+                if (hasDNS && (refExpect?.expectUdp || blueprint.modemExpectations.some(m => m.expectUdp && m.hasDNSServer))) {
+                    total++;
+                    const ok = modem.natConfig?.udp?.enabled;
+                    if (ok) earned++;
+                    checks.push({ label: `${modem.name}: NAT UDP (DNS)`, ok: !!ok });
+                    if (ok && modem.natConfig?.udp?.targetIP) {
+                        total++;
+                        const tgt = servers.find(s => s.ip === modem.natConfig.udp.targetIP && s.services?.dnsserver?.running);
+                        if (tgt) earned++;
+                        checks.push({ label: `${modem.name}: UDP → ${modem.natConfig.udp.targetIP}`, ok: !!tgt,
+                            detail: tgt ? tgt.name : 'Cible incorrecte' });
+                    }
+                }
+                if (refExpect?.expectIcmp) {
+                    total++;
+                    const ok = modem.natConfig?.icmp?.enabled;
+                    if (ok) earned++;
+                    checks.push({ label: `${modem.name}: NAT ICMP`, ok: !!ok });
+                }
+            }
+        }
+        const score = total>0?(earned/total)*pts:(blueprint.hasModem?0:pts);
+        res.details.push({ category: '📶 Modem & NAT', score: Math.round(score*10)/10, max: pts, checks });
+    }
+
+    // ─── 6. SERVEUR WEB ───
+    if (criteria.webServer?.enabled) {
+        const pts = criteria.webServer.points;
+        const checks = []; let earned=0, total=0;
+        const servers = stu.devices.filter(d => d.services?.webserver?.running);
+        total++; if(servers.length>0) earned++;
+        checks.push({ label: 'Serveur web actif', ok: servers.length > 0 });
+        if (blueprint.webContentExpected) {
+            total++;
+            const ok = servers.some(s => !!s.filesystem?.['/var/www/index.html']?.content);
+            if (ok) earned++;
+            checks.push({ label: 'Page web créée', ok });
+        }
+        for (const s of servers) { total++; const ok=isValidIP(s.ip); if(ok) earned++; checks.push({label:`${s.name}: IP ${s.ip||'∅'}`,ok}); }
+        const score = total>0?(earned/total)*pts:0;
+        res.details.push({ category: '🌍 Serveur Web', score: Math.round(score*10)/10, max: pts, checks });
+    }
+
+    // ─── 7. SERVEUR DNS ───
+    if (criteria.dns?.enabled) {
+        const pts = criteria.dns.points;
+        const checks = []; let earned=0, total=0;
+        const dnsServers = stu.devices.filter(d => d.services?.dnsserver?.running);
+        total++; if(dnsServers.length>0) earned++;
+        checks.push({ label: 'Serveur DNS actif', ok: dnsServers.length > 0 });
+        if (blueprint.dnsRecordsExpected) {
+            total++;
+            const ok = dnsServers.some(s => (s.services.dnsserver.records||[]).length > 0);
+            if (ok) earned++;
+            checks.push({ label: 'Enregistrements DNS', ok });
+        }
+        // Valid targets = server IP + modem public IP
+        const validTargets = new Set();
+        for (const d of dnsServers) {
+            if (d.ip) validTargets.add(d.ip);
+            const modem = stu.findDirectModem(d.id);
+            if (modem?.publicIP) validTargets.add(modem.publicIP);
+        }
+        const clients = stu.devices.filter(d => ['PC','LAPTOP'].includes(d.type) && d.dns && d.dns.trim());
+        if (clients.length > 0 || blueprint.validDNSTargets.length > 0) {
+            total++; if(clients.length > 0) earned++;
+            checks.push({ label: `Clients DNS: ${clients.length}`, ok: clients.length > 0 });
+            if (clients.length > 0 && validTargets.size > 0) {
+                let correct = clients.filter(c => validTargets.has(c.dns)).length;
+                total++; if(correct===clients.length) earned++;
+                checks.push({ label: `DNS correct: ${correct}/${clients.length}`, ok: correct===clients.length,
+                    detail: `Cibles: ${[...validTargets].join(', ')}` });
+            }
+        }
+        const score = total>0?(earned/total)*pts:0;
+        res.details.push({ category: '📖 Serveur DNS', score: Math.round(score*10)/10, max: pts, checks });
+    }
+
+    for (const d of res.details) { res.total += d.score; res.maxTotal += d.max; }
+    res.total = Math.round(res.total * 10) / 10;
+    return res;
+}
+
+// ================================================================
+function detectCriteriaFromReference(project) {
+    const bp = buildReferenceBlueprint(project);
+    const hasNAT = bp.modemExpectations.some(m => m.expectTcp||m.expectUdp||m.expectIcmp);
+    return {
+        structure: { enabled: true, points: 1, checkSwitchCount: false, checkNames: false, checkUniqueNames: false },
+        addressing: { enabled: true, points: 3, checkMasks: false, checkExactIPs: false },
+        gateways: { enabled: bp.gatewaysExpected, points: 2, checkExactGateways: false },
+        router: { enabled: bp.hasRouter, points: 4, checkExactRouterIPs: false },
+        modem: { enabled: bp.hasModem, points: 4 },
+        webServer: { enabled: bp.webServerExpected, points: 2 },
+        dns: { enabled: bp.dnsExpected, points: 4 },
+    };
+}
+
+// ================================================================
+function drawNetworkPreview(canvas, project) {
+    const ctx = canvas.getContext('2d');
+    const devices = project.devices||[]; const connections = project.connections||[];
+    if (!devices.length) { ctx.fillStyle='#1a1f26'; ctx.fillRect(0,0,canvas.width,canvas.height); ctx.fillStyle='#8b949e'; ctx.font='14px sans-serif'; ctx.textAlign='center'; ctx.fillText('Aucun appareil',canvas.width/2,canvas.height/2); return; }
+    let mnX=Infinity,mnY=Infinity,mxX=-Infinity,mxY=-Infinity;
+    devices.forEach(d=>{mnX=Math.min(mnX,d.x-40);mnY=Math.min(mnY,d.y-40);mxX=Math.max(mxX,d.x+40);mxY=Math.max(mxY,d.y+60);});
+    const p=30,sw=mxX-mnX+p*2,sh=mxY-mnY+p*2,sc=Math.min(canvas.width/sw,canvas.height/sh,1.5);
+    const ox=(canvas.width-sw*sc)/2-mnX*sc+p*sc,oy=(canvas.height-sh*sc)/2-mnY*sc+p*sc;
+    ctx.fillStyle='#1a1f26';ctx.fillRect(0,0,canvas.width,canvas.height);
+    ctx.strokeStyle='#4d5762';ctx.lineWidth=2*sc;
+    connections.forEach(c=>{const f=devices.find(d=>d.id===c.from),t=devices.find(d=>d.id===c.to);if(!f||!t)return;ctx.beginPath();ctx.moveTo(f.x*sc+ox,f.y*sc+oy);ctx.lineTo(t.x*sc+ox,t.y*sc+oy);ctx.stroke();});
+    const colors={PC:'#58a6ff',LAPTOP:'#39c5cf',SERVER:'#a371f7',SWITCH:'#d29922',ROUTER:'#3fb950',MODEM:'#f85149'};
+    const icons={PC:'💻',LAPTOP:'💻',SERVER:'🗄️',SWITCH:'🔀',ROUTER:'🔀',MODEM:'📶'};
+    devices.forEach(d=>{const x=d.x*sc+ox,y=d.y*sc+oy,r=20*sc,tp=(d.type||'').toUpperCase();const col=colors[tp]||'#58a6ff';ctx.beginPath();ctx.arc(x,y,r,0,Math.PI*2);ctx.fillStyle=col+'30';ctx.fill();ctx.strokeStyle=col;ctx.lineWidth=2*sc;ctx.stroke();ctx.font=`${14*sc}px sans-serif`;ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillStyle='#fff';ctx.fillText(icons[tp]||'?',x,y);ctx.font=`bold ${9*sc}px sans-serif`;ctx.fillStyle='#e6edf3';ctx.textBaseline='top';ctx.fillText(d.name||'',x,y+r+3*sc);if(d.ip){ctx.font=`${8*sc}px sans-serif`;ctx.fillStyle='#8b949e';ctx.fillText(d.ip,x,y+r+14*sc);}});
+}
+
+// ================================================================
+//  REACT APP
+// ================================================================
+const CATEGORIES = [
+    { key:'structure', icon:'🏗️', label:'Structure & Câblage', desc:'Appareils, câbles, sous-réseaux' },
+    { key:'addressing', icon:'🖥️', label:'Adressage postes', desc:'IP correcte par poste (+ masques en option)' },
+    { key:'gateways', icon:'🔗', label:'Passerelles', desc:'1 vérification par poste (consensus + même réseau)' },
+    { key:'router', icon:'🔀', label:'Routeur', desc:'Interfaces réseau par consensus (exclut auto/modem)' },
+    { key:'modem', icon:'📶', label:'Modem & NAT', desc:'NAT seulement sur modems avec serveurs' },
+    { key:'webServer', icon:'🌍', label:'Serveur Web', desc:'Service actif, page web' },
+    { key:'dns', icon:'📖', label:'Serveur DNS', desc:'Service, enreg., clients (IP publique modem OK)' },
+];
+
+function CorrectionApp() {
+    const [step, setStep] = React.useState('config');
+    const [studentFiles, setStudentFiles] = React.useState([]);
+    const [referenceName, setReferenceName] = React.useState('');
+    const [blueprint, setBlueprint] = React.useState(null);
+    const defaultPts = {structure:1,addressing:3,gateways:2,router:4,modem:4,webServer:2,dns:4};
+    const dc = {}; CATEGORIES.forEach(c=>{dc[c.key]={enabled:['structure','addressing'].includes(c.key),points:defaultPts[c.key]||3};});
+    dc.structure.checkSwitchCount = false; dc.structure.checkNames = false; dc.structure.checkUniqueNames = false;
+    dc.addressing.checkMasks = false; dc.addressing.checkExactIPs = false;
+    dc.gateways.checkExactGateways = false;
+    dc.router.checkExactRouterIPs = false;
+    const [criteria, setCriteria] = React.useState(dc);
+    const [results, setResults] = React.useState([]);
+    const [gradingProgress, setGradingProgress] = React.useState(0);
+    const [totalPoints, setTotalPoints] = React.useState(20);
+    const [expandedResults, setExpandedResults] = React.useState({});
+    const [bpSummary, setBpSummary] = React.useState(null);
+    const canvasRefs = React.useRef({});
+
+    const maxPossible = React.useMemo(() => {
+        let s=0; Object.values(criteria).forEach(c=>{if(c.enabled) s+=(c.points||0);}); return s;
+    }, [criteria]);
+
+    const readFile = f => new Promise((res,rej)=>{const r=new FileReader();r.onload=e=>res(e.target.result);r.onerror=()=>rej(new Error('Erreur'));r.readAsText(f);});
+
+    const handleStudentFiles = async e => {
+        const parsed = [];
+        for (const f of Array.from(e.target.files)) {
+            try { parsed.push({ filename: f.name, project: JSON.parse(await readFile(f)) }); }
+            catch(err) { parsed.push({ filename: f.name, error: err.message }); }
+        }
+        setStudentFiles(parsed);
+    };
+
+    const handleReferenceFile = async e => {
+        const f = e.target.files?.[0]; if(!f) return;
+        try {
+            const project = JSON.parse(await readFile(f));
+            setReferenceName(f.name);
+            const bp = buildReferenceBlueprint(project);
+            setBlueprint(bp); setCriteria(detectCriteriaFromReference(project)); setBpSummary(bp);
+        } catch(err) { alert('Erreur: '+err.message); }
+    };
+
+    const updateCriteria = (cat,field,val) => setCriteria(p=>({...p,[cat]:{...p[cat],[field]:val}}));
+
+    const runGrading = async () => {
+        setStep('grading'); setResults([]);
+        let bp = blueprint || { deviceCounts:{},subnetCount:0,totalEndpoints:0,hasRouter:criteria.router?.enabled,hasModem:criteria.modem?.enabled,routerExpectedRealInterfaces:2,webServerExpected:criteria.webServer?.enabled,webContentExpected:true,dnsExpected:criteria.dns?.enabled,dnsRecordsExpected:true,modemExpectations:[],validDNSTargets:[],subnetSummary:[],gatewaysExpected:criteria.gateways?.enabled };
+        const all = [];
+        for (let i=0; i<studentFiles.length; i++) {
+            setGradingProgress(Math.round(((i+1)/studentFiles.length)*100));
+            const sf = studentFiles[i];
+            if (sf.error) { all.push({filename:sf.filename,error:sf.error,score:0,maxScore:totalPoints}); continue; }
+            const gr = gradeProject(sf.project, criteria, bp);
+            const scaled = maxPossible>0?(gr.total/maxPossible)*totalPoints:0;
+            all.push({filename:sf.filename,project:sf.project,gradeResult:gr,score:Math.round(scaled*100)/100,maxScore:totalPoints});
+            await new Promise(r=>setTimeout(r,10));
+        }
+        setResults(all); setStep('results');
+    };
+
+    React.useEffect(() => {
+        if (step!=='results') return;
+        setTimeout(()=>{results.forEach((r,i)=>{const c=canvasRefs.current[i];if(c&&r.project) drawNetworkPreview(c,r.project);});},100);
+    }, [step, results]);
+
+    const exportCSV = () => {
+        let csv='\ufeff'+'Fichier;Note;Barème';
+        if(results[0]?.gradeResult) results[0].gradeResult.details.forEach(d=>{csv+=';'+d.category.replace(/[^\w\sàéèêëîïôùûüÿçÀÉ]/g,'').trim();});
+        csv+='\n';
+        results.forEach(r=>{
+            csv+=`${r.filename};${r.score.toFixed(1).replace('.',',')};${r.maxScore.toFixed(1).replace('.',',')}`;
+            if(r.gradeResult) r.gradeResult.details.forEach(d=>{
+                csv+=';'+d.score.toFixed(1).replace('.',',')+'/'+d.max.toFixed(1).replace('.',',');
+            });
+            csv+='\n';
+        });
+        const blob=new Blob([csv],{type:'text/csv;charset=utf-8'});const url=URL.createObjectURL(blob);
+        const a=document.createElement('a');a.href=url;a.download='correction_filius.csv';document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(url);
+    };
+
+    const S = {
+        container:{maxWidth:1100,margin:'0 auto',padding:'20px 24px'},
+        header:{display:'flex',alignItems:'center',gap:16,padding:'20px 0',borderBottom:'1px solid var(--border)',marginBottom:24},
+        headerIcon:{width:44,height:44,borderRadius:12,background:'linear-gradient(135deg, var(--accent-blue), var(--accent-purple))',display:'flex',alignItems:'center',justifyContent:'center',fontSize:22,flexShrink:0},
+        card:{background:'var(--bg-panel)',borderRadius:10,border:'1px solid var(--border)',padding:20,marginBottom:16},
+        input:{background:'var(--bg-input)',border:'1px solid var(--border)',borderRadius:6,padding:'6px 10px',color:'var(--text)',fontSize:13,width:70,textAlign:'center'},
+        toggle:on=>({width:40,height:22,borderRadius:11,background:on?'var(--accent-green)':'var(--bg-input)',border:'1px solid '+(on?'var(--accent-green)':'var(--border)'),cursor:'pointer',position:'relative',transition:'all .2s',flexShrink:0}),
+        toggleDot:on=>({width:16,height:16,borderRadius:'50%',background:'#fff',position:'absolute',top:2,left:on?20:2,transition:'left .2s'}),
+        btn:{background:'var(--accent-blue)',color:'#fff',border:'none',borderRadius:8,padding:'10px 24px',fontSize:14,fontWeight:600,cursor:'pointer',display:'flex',alignItems:'center',gap:8},
+        btnSec:{background:'var(--bg-input)',color:'var(--text)',border:'1px solid var(--border)',borderRadius:8,padding:'10px 24px',fontSize:14,cursor:'pointer',display:'flex',alignItems:'center',gap:8},
+        btnGreen:{background:'var(--accent-green)',color:'#fff',border:'none',borderRadius:8,padding:'12px 32px',fontSize:15,fontWeight:600,cursor:'pointer',display:'flex',alignItems:'center',gap:8},
+        badge:c=>({background:c+'20',color:c,padding:'2px 8px',borderRadius:10,fontSize:11,fontWeight:600}),
+        progressBar:{width:'100%',height:8,background:'var(--bg-input)',borderRadius:4,overflow:'hidden'},
+        progressFill:pct=>({width:pct+'%',height:'100%',background:'linear-gradient(90deg, var(--accent-blue), var(--accent-purple))',borderRadius:4,transition:'width .3s'}),
+        resultCard:{background:'var(--bg-panel)',borderRadius:10,border:'1px solid var(--border)',marginBottom:12,overflow:'hidden'},
+        resultHeader:{display:'flex',alignItems:'center',gap:12,padding:'14px 16px',cursor:'pointer'},
+        resultBody:{padding:'0 16px 16px',borderTop:'1px solid var(--border)'},
+        check:ok=>({display:'flex',alignItems:'center',gap:8,padding:'4px 0',fontSize:13,color:ok?'var(--accent-green)':'var(--accent-red)'}),
+        scoreCircle:ratio=>{const c=ratio>=0.8?'var(--accent-green)':ratio>=0.5?'var(--accent-yellow)':'var(--accent-red)';return{width:48,height:48,borderRadius:'50%',border:`3px solid ${c}`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:15,fontWeight:700,color:c,flexShrink:0};},
+        infoBox:{background:'rgba(88,166,255,0.08)',border:'1px solid rgba(88,166,255,0.2)',borderRadius:8,padding:'12px 16px',marginTop:12,fontSize:13,lineHeight:1.6},
+    };
+    const Toggle=({value,onChange})=>(<div style={S.toggle(value)} onClick={()=>onChange(!value)}><div style={S.toggleDot(value)}/></div>);
+
+    // ═══════ CONFIG ═══════
+    if (step==='config') return (
+        <div style={S.container}>
+            <div style={S.header}>
+                <div style={S.headerIcon}>📋</div>
+                <div><div style={{fontSize:22,fontWeight:700}}>Correction automatique</div><div style={{fontSize:13,color:'var(--text-dim)'}}>Consensus par sous-réseau — pénalise le minoritaire</div></div>
+                <div style={{marginLeft:'auto'}}><a href="index.html" style={{color:'var(--accent-blue)',textDecoration:'none',fontSize:13}}>← Retour</a></div>
+            </div>
+            <div style={S.card}>
+                <div style={{...S.card,border:'none',padding:0,marginBottom:0}}>
+                    <div style={{fontSize:15,fontWeight:600,marginBottom:8,display:'flex',alignItems:'center',gap:8}}><span style={S.badge('var(--accent-purple)')}>1</span>Réseau de référence</div>
+                    <div style={{display:'flex',gap:12,alignItems:'center'}}>
+                        <label style={{...S.btnSec,position:'relative',overflow:'hidden'}}>📁 Charger référence<input type="file" accept=".json" onChange={handleReferenceFile} style={{position:'absolute',opacity:0,width:'100%',height:'100%',top:0,left:0,cursor:'pointer'}}/></label>
+                        {referenceName && <span style={{fontSize:13,color:'var(--accent-green)'}}>✓ {referenceName}</span>}
+                    </div>
+                    {bpSummary && (
+                        <div style={S.infoBox}>
+                            <strong>🔍 Topologie :</strong>
+                            <div style={{display:'flex',flexWrap:'wrap',gap:'4px 16px',marginTop:6}}>
+                                <span>{bpSummary.totalEndpoints} poste(s)</span><span>•</span>
+                                <span>{bpSummary.subnetCount} sous-réseau(x)</span><span>•</span>
+                                <span>{bpSummary.hasRouter?'✓':'✗'} Routeur ({bpSummary.routerExpectedRealInterfaces} interfaces)</span><span>•</span>
+                                <span>{bpSummary.gatewaysExpected?'✓':'✗'} Passerelles attendues</span>
+                            </div>
+                            <div style={{marginTop:4}}><strong>Modems :</strong></div>
+                            {bpSummary.modemExpectations.map((m,i)=>(
+                                <div key={i} style={{display:'flex',gap:10,fontSize:12,marginTop:2}}>
+                                    <span>{m.name} ({m.publicIP||'?'})</span>
+                                    {[['Web',m.hasWebServer],['DNS',m.hasDNSServer],['TCP',m.expectTcp],['UDP',m.expectUdp],['ICMP',m.expectIcmp]].map(([l,v])=>
+                                        <span key={l} style={{color:v?'var(--accent-green)':'var(--text-muted)'}}>{v?'✓':'✗'} {l}</span>
+                                    )}
+                                </div>
+                            ))}
+                            {bpSummary.validDNSTargets.length>0 && <div style={{marginTop:4,fontSize:12}}><strong>DNS valides :</strong> {bpSummary.validDNSTargets.join(', ')}</div>}
+                        </div>
+                    )}
+                </div>
+            </div>
+
+            <div style={{marginBottom:16}}>
+                <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:12}}>
+                    <div style={{display:'flex',alignItems:'center',gap:8}}><span style={S.badge('var(--accent-blue)')}>2</span><span style={{fontSize:15,fontWeight:600}}>Barème</span></div>
+                    <div style={{display:'flex',alignItems:'center',gap:8}}>
+                        <span style={{fontSize:13,color:'var(--text-dim)'}}>Note sur</span>
+                        <input type="number" min="1" max="100" value={totalPoints} onChange={e=>setTotalPoints(parseInt(e.target.value)||20)} style={{...S.input,width:55}}/>
+                        <span style={{fontSize:12,color:'var(--text-muted)',marginLeft:8}}>(brut: {maxPossible})</span>
+                    </div>
+                </div>
+                {CATEGORIES.map(cat=>(
+                    <div key={cat.key} style={{...S.card,opacity:criteria[cat.key]?.enabled?1:0.5,padding:'14px 20px'}}>
+                        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}>
+                            <div style={{display:'flex',alignItems:'center',gap:10,flex:1}}>
+                                <span style={{fontSize:20}}>{cat.icon}</span>
+                                <div><div style={{fontSize:14,fontWeight:600}}>{cat.label}</div><div style={{fontSize:12,color:'var(--text-dim)'}}>{cat.desc}</div></div>
+                            </div>
+                            <div style={{display:'flex',alignItems:'center',gap:12}}>
+                                <div style={{display:'flex',alignItems:'center',gap:6}}>
+                                    <input type="number" min="0" max="20" step="0.5" value={criteria[cat.key]?.points||0} onChange={e=>updateCriteria(cat.key,'points',parseFloat(e.target.value)||0)} style={{...S.input,width:55}} disabled={!criteria[cat.key]?.enabled}/>
+                                    <span style={{fontSize:12,color:'var(--text-dim)'}}>pts</span>
+                                </div>
+                                <Toggle value={criteria[cat.key]?.enabled||false} onChange={v=>updateCriteria(cat.key,'enabled',v)}/>
+                            </div>
+                        </div>
+                        {cat.key === 'structure' && criteria.structure?.enabled && (
+                            <div style={{marginTop:8,paddingLeft:36,display:'flex',flexDirection:'column',gap:6}}>
+                                <label style={{display:'flex',alignItems:'center',gap:8,fontSize:12,color:'var(--text-dim)',cursor:'pointer'}}>
+                                    <input type="checkbox" checked={criteria.structure?.checkSwitchCount||false}
+                                        onChange={e=>updateCriteria('structure','checkSwitchCount',e.target.checked)}
+                                        style={{accentColor:'var(--accent-blue)'}}/>
+                                    Nombre de switch identique à la référence
+                                </label>
+                                <label style={{display:'flex',alignItems:'center',gap:8,fontSize:12,color:criteria.structure?.checkUniqueNames?'var(--text-muted)':'var(--text-dim)',cursor:'pointer'}}>
+                                    <input type="checkbox" checked={criteria.structure?.checkNames||false}
+                                        disabled={criteria.structure?.checkUniqueNames}
+                                        onChange={e=>updateCriteria('structure','checkNames',e.target.checked)}
+                                        style={{accentColor:'var(--accent-blue)'}}/>
+                                    Appellation identique à la référence
+                                </label>
+                                <label style={{display:'flex',alignItems:'center',gap:8,fontSize:12,color:'var(--text-dim)',cursor:'pointer'}}>
+                                    <input type="checkbox" checked={criteria.structure?.checkUniqueNames||false}
+                                        onChange={e=>{updateCriteria('structure','checkUniqueNames',e.target.checked); if(e.target.checked) updateCriteria('structure','checkNames',false);}}
+                                        style={{accentColor:'var(--accent-blue)'}}/>
+                                    Les éléments doivent avoir un nom différent
+                                </label>
+                            </div>
+                        )}
+                        {cat.key === 'addressing' && criteria.addressing?.enabled && (
+                            <div style={{marginTop:8,paddingLeft:36,display:'flex',flexDirection:'column',gap:6}}>
+                                <label style={{display:'flex',alignItems:'center',gap:8,fontSize:12,color:'var(--text-dim)',cursor:'pointer'}}>
+                                    <input type="checkbox" checked={criteria.addressing?.checkMasks||false}
+                                        onChange={e=>updateCriteria('addressing','checkMasks',e.target.checked)}
+                                        style={{accentColor:'var(--accent-blue)'}}/>
+                                    Noter les masques de sous-réseau
+                                </label>
+                                <label style={{display:'flex',alignItems:'center',gap:8,fontSize:12,color:'var(--text-dim)',cursor:'pointer'}}>
+                                    <input type="checkbox" checked={criteria.addressing?.checkExactIPs||false}
+                                        onChange={e=>updateCriteria('addressing','checkExactIPs',e.target.checked)}
+                                        style={{accentColor:'var(--accent-blue)'}}/>
+                                    Adresses IP identiques à la référence
+                                </label>
+                            </div>
+                        )}
+                        {cat.key === 'gateways' && criteria.gateways?.enabled && (
+                            <div style={{marginTop:8,paddingLeft:36,display:'flex',flexDirection:'column',gap:6}}>
+                                <label style={{display:'flex',alignItems:'center',gap:8,fontSize:12,color:'var(--text-dim)',cursor:'pointer'}}>
+                                    <input type="checkbox" checked={criteria.gateways?.checkExactGateways||false}
+                                        onChange={e=>updateCriteria('gateways','checkExactGateways',e.target.checked)}
+                                        style={{accentColor:'var(--accent-blue)'}}/>
+                                    Passerelles identiques à la référence
+                                </label>
+                            </div>
+                        )}
+                        {cat.key === 'router' && criteria.router?.enabled && (
+                            <div style={{marginTop:8,paddingLeft:36,display:'flex',flexDirection:'column',gap:6}}>
+                                <label style={{display:'flex',alignItems:'center',gap:8,fontSize:12,color:'var(--text-dim)',cursor:'pointer'}}>
+                                    <input type="checkbox" checked={criteria.router?.checkExactRouterIPs||false}
+                                        onChange={e=>updateCriteria('router','checkExactRouterIPs',e.target.checked)}
+                                        style={{accentColor:'var(--accent-blue)'}}/>
+                                    Adressage identique à la référence
+                                </label>
+                            </div>
+                        )}
+                    </div>
+                ))}
+            </div>
+
+            <div style={S.card}>
+                <div style={{fontSize:15,fontWeight:600,marginBottom:8,display:'flex',alignItems:'center',gap:8}}><span style={S.badge('var(--accent-green)')}>3</span>Fichiers élèves</div>
+                {studentFiles.length === 0 ? (
+                    <label style={{...S.card,border:'2px dashed var(--border)',cursor:'pointer',textAlign:'center',padding:'30px 20px',display:'block',marginBottom:0}}>
+                        <div style={{fontSize:36,marginBottom:8}}>📂</div>
+                        <div style={{fontSize:14,fontWeight:500}}>Sélectionner les .json</div>
+                        <input type="file" accept=".json" multiple onChange={handleStudentFiles} style={{position:'absolute',opacity:0,width:0,height:0}}/>
+                    </label>
+                ) : (
+                    <div>
+                        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:8}}>
+                            <span style={{fontSize:13,color:'var(--accent-green)',fontWeight:600}}>{studentFiles.length} fichier(s) chargé(s)</span>
+                            <label style={{fontSize:12,color:'var(--accent-blue)',cursor:'pointer',display:'flex',alignItems:'center',gap:4}}>
+                                📁 Recharger
+                                <input type="file" accept=".json" multiple onChange={handleStudentFiles} style={{position:'absolute',opacity:0,width:0,height:0}}/>
+                            </label>
+                        </div>
+                        <div style={{maxHeight:160,overflowY:'auto',background:'var(--bg-input)',borderRadius:6,border:'1px solid var(--border)',padding:'6px 10px'}}>
+                            {studentFiles.map((f,i)=>
+                                <div key={i} style={{display:'flex',alignItems:'center',gap:8,padding:'3px 0',fontSize:12}}>
+                                    <span style={{color:f.error?'var(--accent-red)':'var(--accent-green)',flexShrink:0}}>{f.error?'✗':'✓'}</span>
+                                    <span style={{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{f.filename}</span>
+                                    {f.error && <span style={{fontSize:11,color:'var(--accent-red)',marginLeft:'auto',flexShrink:0}}>Erreur</span>}
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                )}
+            </div>
+
+            <div style={{display:'flex',justifyContent:'center',padding:'16px 0'}}>
+                <button style={{...S.btnGreen,opacity:studentFiles.length===0?0.5:1}} disabled={studentFiles.length===0} onClick={runGrading}>🚀 Corriger ({studentFiles.length})</button>
+            </div>
+        </div>
+    );
+
+    if (step==='grading') return (
+        <div style={S.container}><div style={{...S.card,textAlign:'center',marginTop:100}}>
+            <div style={{fontSize:48,marginBottom:16}}>⏳</div>
+            <div style={{fontSize:18,fontWeight:600,marginBottom:8}}>Correction...</div>
+            <div style={{fontSize:13,color:'var(--text-dim)',marginBottom:16}}>{gradingProgress}%</div>
+            <div style={S.progressBar}><div style={S.progressFill(gradingProgress)}/></div>
+        </div></div>
+    );
+
+    // ═══════ RESULTS ═══════
+    const avg=results.length>0?results.reduce((s,r)=>s+r.score,0)/results.length:0;
+    const maxSc=results.length>0?Math.max(...results.map(r=>r.score)):0;
+    const minSc=results.length>0?Math.min(...results.map(r=>r.score)):0;
+
+    return (
+        <div style={S.container}>
+            <div style={S.header}>
+                <div style={S.headerIcon}>✅</div>
+                <div><div style={{fontSize:22,fontWeight:700}}>Résultats</div><div style={{fontSize:13,color:'var(--text-dim)'}}>{results.length} copie(s) • {referenceName||'Sans réf.'}</div></div>
+                <div style={{marginLeft:'auto',display:'flex',gap:10}}>
+                    <button style={S.btnSec} onClick={()=>{setStep('config');setResults([]);setExpandedResults({});}}>← Recommencer</button>
+                    <button style={S.btn} onClick={exportCSV}>📥 CSV</button>
+                </div>
+            </div>
+            <div style={{display:'flex',gap:12,marginBottom:20}}>
+                {[{l:'Moyenne',v:avg.toFixed(1)+'/'+totalPoints,c:'var(--accent-blue)'},{l:'Max',v:maxSc.toFixed(1)+'/'+totalPoints,c:'var(--accent-green)'},{l:'Min',v:minSc.toFixed(1)+'/'+totalPoints,c:'var(--accent-red)'},{l:'Copies',v:results.length,c:'var(--accent-purple)'}].map((s,i)=>
+                    <div key={i} style={{...S.card,flex:1,textAlign:'center',padding:14}}><div style={{fontSize:12,color:'var(--text-dim)',marginBottom:4}}>{s.l}</div><div style={{fontSize:22,fontWeight:700,color:s.c}}>{s.v}</div></div>
+                )}
+            </div>
+            {results.map((r,idx)=>{
+                const ratio=r.maxScore>0?r.score/r.maxScore:0;
+                const exp=expandedResults[idx];
+                return (
+                    <div key={idx} style={S.resultCard}>
+                        <div style={S.resultHeader} onClick={()=>setExpandedResults(p=>({...p,[idx]:!p[idx]}))}>
+                            <div style={S.scoreCircle(ratio)}>{r.score}</div>
+                            <div style={{flex:1,minWidth:0}}>
+                                <div style={{fontSize:14,fontWeight:600,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{r.filename}</div>
+                                <div style={{fontSize:12,color:'var(--text-dim)'}}>{r.error?`❌ ${r.error}`:`${r.score}/${r.maxScore}`}</div>
+                            </div>
+                            {r.gradeResult && <div style={{display:'flex',gap:3,alignItems:'flex-end',height:32,marginRight:8}}>
+                                {r.gradeResult.details.map((d,di)=>{const cr=d.max>0?d.score/d.max:0;return <div key={di} title={`${d.category}: ${d.score}/${d.max}`} style={{width:8,height:Math.max(4,cr*32),background:cr>=0.8?'var(--accent-green)':cr>=0.5?'var(--accent-yellow)':'var(--accent-red)',borderRadius:2,opacity:0.8}}/>;})}
+                            </div>}
+                            <span style={{fontSize:16,color:'var(--text-dim)',transform:exp?'rotate(180deg)':'',transition:'transform .2s'}}>▼</span>
+                        </div>
+                        {exp && r.gradeResult && (
+                            <div style={S.resultBody}><div style={{display:'flex',gap:16,marginTop:12}}>
+                                <div style={{flexShrink:0}}><canvas ref={el=>{canvasRefs.current[idx]=el;if(el&&r.project)drawNetworkPreview(el,r.project);}} width={360} height={220} style={{borderRadius:8,border:'1px solid var(--border)'}}/></div>
+                                <div style={{flex:1,minWidth:0}}>
+                                    {r.gradeResult.details.map((d,di)=>{
+                                        const cr=d.max>0?d.score/d.max:0;
+                                        const col=cr>=0.8?'var(--accent-green)':cr>=0.5?'var(--accent-yellow)':'var(--accent-red)';
+                                        return (<div key={di} style={{marginBottom:12}}>
+                                            <div style={{display:'flex',justifyContent:'space-between',marginBottom:4}}>
+                                                <span style={{fontSize:13,fontWeight:600}}>{d.category}</span>
+                                                <span style={{fontSize:13,fontWeight:700,color:col}}>{d.score}/{d.max}</span>
+                                            </div>
+                                            <div style={{width:'100%',height:4,background:'var(--bg-input)',borderRadius:2,marginBottom:4}}>
+                                                <div style={{width:(cr*100)+'%',height:'100%',background:col,borderRadius:2}}/>
+                                            </div>
+                                            {d.checks.map((ck,ci)=><div key={ci} style={S.check(ck.ok)}><span>{ck.ok?'✓':'✗'}</span><span>{ck.label}</span>{ck.detail&&<span style={{fontSize:11,color:'var(--text-muted)'}}>({ck.detail})</span>}</div>)}
+                                        </div>);
+                                    })}
+                                </div>
+                            </div></div>
+                        )}
+                    </div>
+                );
+            })}
+        </div>
+    );
+}
+
+ReactDOM.render(<CorrectionApp/>, document.getElementById('root'));
+</script>
+</body>
+</html>

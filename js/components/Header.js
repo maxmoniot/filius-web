@@ -20,8 +20,8 @@ function Header({ projectName, setProjectName, networkSpeed, setNetworkSpeed, on
                             type="text"
                             value={projectName}
                             onChange={(e) => setProjectName(e.target.value)}
-                            onBlur={() => setEditingName(false)}
-                            onKeyDown={(e) => e.key === 'Enter' && setEditingName(false)}
+                            onBlur={() => { if (!projectName.trim()) setProjectName('Nouveau projet'); setEditingName(false); }}
+                            onKeyDown={(e) => { if (e.key === 'Enter') { if (!projectName.trim()) setProjectName('Nouveau projet'); setEditingName(false); } }}
                             autoFocus
                             style={{
                                 background: 'var(--bg-input)',
